@@ -1,0 +1,42 @@
+# ===================================================================
+# Smart-WorkFlow 开发环境配置
+# ===================================================================
+server:
+  port: 8080
+
+spring:
+  datasource:
+    username: ${DATASOURCE_USERNAME:root}
+    password: ${DATASOURCE_PASSWORD:root}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-your-openai-api-key}
+    ollama:
+      base-url: http://localhost:11434
+
+  flyway:
+    enabled: true
+
+  mqtt:
+    broker:
+      username: ${MQTT_USERNAME:dev}
+      password: ${MQTT_PASSWORD:dev}
+
+  minio:
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+
+logging:
+  level:
+    root: info
+    com.sw.ck: debug
+    org.springframework.jdbc: debug
+    com.baomidou.mybatisplus: debug
+

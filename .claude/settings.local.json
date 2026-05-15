@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-module-dependencies)",
+      "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-bootstrap/src/main/java/com/sw/ck/bootstrap)",
+      "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-bootstrap/src/main/resources)"
+    ]
+  }
+}

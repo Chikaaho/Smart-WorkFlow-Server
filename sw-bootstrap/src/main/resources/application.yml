@@ -1,0 +1,126 @@
+# ===================================================================
+# Smart-WorkFlow 主配置文件
+# ===================================================================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: smart-workflow
+
+  profiles:
+    active: dev
+
+  # ======================== 数据源 ========================
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/smart_workflow?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
+    username: ${DATASOURCE_USERNAME:root}
+    password: ${DATASOURCE_PASSWORD:}
+
+  # ======================== Druid ========================
+  druid:
+    initial-size: 5
+    min-idle: 5
+    max-active: 20
+    max-wait: 60000
+    stat-view-servlet:
+      enabled: true
+      url-pattern: /druid/*
+      login-username: ${DRUID_USERNAME:admin}
+      login-password: ${DRUID_PASSWORD:admin}
+    filter:
+      stat:
+        enabled: true
+        log-slow-sql: true
+        slow-sql-millis: 2000
+
+  # ======================== Flyway ========================
+  flyway:
+    enabled: false
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    table: flyway_schema_history
+
+  # ======================== Redis ========================
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+      timeout: 5000
+
+  # ======================== Flowable ========================
+  flowable:
+    async-executor-activate: false
+    database-schema-update: true
+
+  # ======================== Spring AI ========================
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      chat:
+        options:
+          model: gpt-4o
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: llama3
+
+  # ======================== MQTT ========================
+  mqtt:
+    broker:
+      url: tcp://localhost:1883
+      client-id: smart-workflow-client
+      username: ${MQTT_USERNAME:}
+      password: ${MQTT_PASSWORD:}
+
+  # ======================== MinIO ========================
+  minio:
+    url: http://localhost:9000
+    access-key: ${MINIO_ACCESS_KEY:}
+    secret-key: ${MINIO_SECRET_KEY:}
+    bucket: smart-workflow
+
+# ======================== MyBatis-Plus ========================
+mybatis-plus:
+  mapper-locations: classpath:mapper/**/*.xml
+  type-aliases-package: com.sw.ck.**.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: ASSIGN_ID
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ======================== 日志 ========================
+logging:
+  level:
+    root: info
+    com.sw.ck: debug
+
+# ======================== Actuator ========================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# ======================== SpringDoc ========================
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
