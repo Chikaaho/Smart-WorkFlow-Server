@@ -16,7 +16,81 @@
     <name>Smart-WorkFlow :: Bootstrap</name>
     <description>唯一启动入口模块</description>
 
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.sw.ck</groupId>
+                <artifactId>sw-module-dependencies</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
+        <!-- =================== 业务模块（模块化单体装配） =================== -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-storage</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-security</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-job</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-knowledge</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-notify</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-system</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-openapi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-workflow</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-lowcode</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-module-iot</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- =================== 基础启动依赖 =================== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

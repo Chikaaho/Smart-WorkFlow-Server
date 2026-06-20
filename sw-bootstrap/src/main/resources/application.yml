@@ -36,9 +36,22 @@ spring:
         slow-sql-millis: 2000
 
   # ======================== Flyway ========================
+  # 各 sw-module-xxx 自带迁移脚本于 resources/db/migration/<module>，此处聚合扫描；本轮各目录均为空占位，不含任何 DDL
   flyway:
     enabled: false
-    locations: classpath:db/migration
+    locations:
+      - classpath:db/migration/common
+      - classpath:db/migration/storage
+      - classpath:db/migration/security
+      - classpath:db/migration/job
+      - classpath:db/migration/knowledge
+      - classpath:db/migration/notify
+      - classpath:db/migration/system
+      - classpath:db/migration/openapi
+      - classpath:db/migration/workflow
+      - classpath:db/migration/lowcode
+      - classpath:db/migration/agent
+      - classpath:db/migration/iot
     baseline-on-migrate: true
     table: flyway_schema_history
 

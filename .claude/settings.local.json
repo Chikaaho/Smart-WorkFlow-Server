@@ -3,7 +3,36 @@
     "allow": [
       "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-module-dependencies)",
       "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-bootstrap/src/main/java/com/sw/ck/bootstrap)",
-      "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-bootstrap/src/main/resources)"
+      "Bash(mkdir -p /usr/local/projects/Smart-WorkFlow/sw-bootstrap/src/main/resources)",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.ai+AND+a:spring-ai-pgvector-store-spring-boot-starter&core=gav&rows=20&wt=json\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.pgvector+AND+a:pgvector&core=gav&rows=20&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.ai+AND+a:spring-ai-starter-vector-store-pgvector&core=gav&rows=20&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.ai+AND+pgvector&rows=20&wt=json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\([x['v'] for x in d['response']['docs']]\\)\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.ai+AND+a:spring-ai-bom&core=gav&rows=30&wt=json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('numFound', d['response']['numFound']\\)\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.baomidou+AND+v:3.5.9&core=gav&rows=30&wt=json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('numFound',d['response']['numFound']\\); [print\\(x['a'],x['v']\\) for x in d['response']['docs']]\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.baomidou+AND+a:mybatis-plus&core=gav&rows=10&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.baomidou+AND+a:mybatis-plus-jsqlparser&core=gav&rows=10&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.alibaba+AND+a:druid-spring-boot-3-starter&core=gav&rows=10&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:com.baomidou&rows=50&wt=json\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:org.springframework.ai+AND+a:spring-ai-core&core=gav&rows=30&wt=json\")",
+      "WebSearch",
+      "Bash(set -e)",
+      "Bash(mkdir -p __TRACKED_VAR__/sw-module-storage/src/main/java/com/sw/ck/storage/config)",
+      "Bash(mkdir -p __TRACKED_VAR__/sw-module-storage/src/main/resources/db/migration/storage)",
+      "Bash(mkdir -p __TRACKED_VAR__/sw-module-security/src/main/java/com/sw/ck/security/config)",
+      "Bash(mkdir -p __TRACKED_VAR__/sw-module-security/src/main/java/com/sw/ck/security/holder)",
+      "Read(//Users/chikan/.m2/repository/com/**)",
+      "Read(//Users/chikan/.m2/repository/**)",
+      "Bash(mvn -q install)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn *)",
+      "Read(//Users/chikan/**)",
+      "Bash(mvn *)"
     ]
   }
 }
