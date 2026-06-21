@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.sw.ck</groupId>
+        <artifactId>smart-workflow</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>sw-basic</artifactId>
+    <packaging>pom</packaging>
+
+    <name>Smart-WorkFlow :: Basic</name>
+    <description>基础能力层：存储/通知/定时/IoT/知识库/AI 助手</description>
+
+    <modules>
+        <module>sw-basic-storage</module>
+        <module>sw-basic-notify</module>
+        <module>sw-basic-job</module>
+        <module>sw-basic-iot</module>
+        <module>sw-basic-knowledge</module>
+        <module>sw-basic-agent</module>
+    </modules>
+</project>

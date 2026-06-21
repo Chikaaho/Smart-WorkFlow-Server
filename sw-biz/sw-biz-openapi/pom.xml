@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.sw.ck</groupId>
+        <artifactId>smart-workflow</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sw-biz-openapi</artifactId>
+    <packaging>pom</packaging>
+
+    <name>Smart-WorkFlow :: Biz :: OpenAPI</name>
+    <description>开放接口模块：应用/授权/签名鉴权/限流/Webhook/文档/日志</description>
+
+    <modules>
+        <module>sw-biz-openapi-api</module>
+        <module>sw-biz-openapi-biz</module>
+    </modules>
+</project>

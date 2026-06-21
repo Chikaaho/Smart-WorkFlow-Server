@@ -20,7 +20,7 @@
         <dependencies>
             <dependency>
                 <groupId>com.sw.ck</groupId>
-                <artifactId>sw-module-dependencies</artifactId>
+                <artifactId>sw-dependencies</artifactId>
                 <version>${project.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
@@ -29,65 +29,69 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- =================== 业务模块（模块化单体装配） =================== -->
+        <!-- =================== 内核层 =================== -->
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-common</artifactId>
+            <artifactId>sw-common</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-storage</artifactId>
+            <artifactId>sw-security</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- =================== 基础能力层 =================== -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-basic-storage</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-security</artifactId>
+            <artifactId>sw-basic-notify-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-job</artifactId>
+            <artifactId>sw-basic-job</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-knowledge</artifactId>
+            <artifactId>sw-basic-iot</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-notify</artifactId>
+            <artifactId>sw-basic-knowledge</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-system</artifactId>
+            <artifactId>sw-basic-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- =================== 业务层（依赖 -biz 实现） =================== -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-biz-system-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-openapi</artifactId>
+            <artifactId>sw-biz-openapi-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-workflow</artifactId>
+            <artifactId>sw-biz-workflow-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-lowcode</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-agent</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.sw.ck</groupId>
-            <artifactId>sw-module-iot</artifactId>
+            <artifactId>sw-biz-lowcode-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
 

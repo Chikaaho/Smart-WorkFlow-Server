@@ -14,19 +14,19 @@
     <url>https://github.com/your-org/smart-workflow</url>
 
     <modules>
-        <module>sw-module-dependencies</module>
-        <module>sw-module-common</module>
-        <module>sw-module-storage</module>
-        <module>sw-module-security</module>
-        <module>sw-module-job</module>
-        <module>sw-module-knowledge</module>
-        <module>sw-module-notify</module>
-        <module>sw-module-system</module>
-        <module>sw-module-openapi</module>
-        <module>sw-module-workflow</module>
-        <module>sw-module-lowcode</module>
-        <module>sw-module-agent</module>
-        <module>sw-module-iot</module>
+        <!-- BOM 版本管理 -->
+        <module>sw-dependencies</module>
+
+        <!-- 内核层 -->
+        <module>sw-framework</module>
+
+        <!-- 基础能力层 -->
+        <module>sw-basic</module>
+
+        <!-- 业务层 -->
+        <module>sw-biz</module>
+
+        <!-- 启动入口 -->
         <module>sw-bootstrap</module>
     </modules>
 
@@ -68,6 +68,23 @@
                             </goals>
                         </execution>
                     </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>3.5.0</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-enforcer-rules</artifactId>
+                            <version>3.5.0</version>
+                        </dependency>
+                    </dependencies>
+                    <configuration>
+                        <rules>
+                            <dependencyConvergence/>
+                        </rules>
+                    </configuration>
                 </plugin>
             </plugins>
         </pluginManagement>
