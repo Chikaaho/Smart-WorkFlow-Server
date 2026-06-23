@@ -11,48 +11,48 @@ spring:
   profiles:
     active: dev
 
-  # ======================== 数据源 ========================
+  # ======================== 多数据源（dynamic-datasource，主库 = master） ========================
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/smart_workflow?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
-    username: ${DATASOURCE_USERNAME:root}
-    password: ${DATASOURCE_PASSWORD:}
+    dynamic:
+      primary: master
+      # FLyway 只跑主库；动态数据源自带的 Flyway 集成关闭，统一由 FlywayConfiguration 管控
+      flyway:
+        enabled: false
+      # Druid 连接池全局配置
+      druid:
+        initial-size: 5
+        min-idle: 5
+        max-active: 20
+        max-wait: 60000
+      datasource:
+        master:
+          driver-class-name: org.postgresql.Driver
+          url: jdbc:postgresql://localhost:5432/smart_workflow
+          username: ${DATASOURCE_USERNAME:postgres}
+          password: ${DATASOURCE_PASSWORD:}
+        # 扩展库示例（按需取消注释并补齐连接信息）：
+        # iot:
+        #   driver-class-name: org.postgresql.Driver
+        #   url: jdbc:postgresql://localhost:5432/smart_workflow_iot
+        #   username: ${DATASOURCE_USERNAME:postgres}
+        #   password: ${DATASOURCE_PASSWORD:}
 
-  # ======================== Druid ========================
+  # ======================== Druid 监控页面 ========================
   druid:
-    initial-size: 5
-    min-idle: 5
-    max-active: 20
-    max-wait: 60000
     stat-view-servlet:
       enabled: true
       url-pattern: /druid/*
       login-username: ${DRUID_USERNAME:admin}
       login-password: ${DRUID_PASSWORD:admin}
-    filter:
-      stat:
-        enabled: true
-        log-slow-sql: true
-        slow-sql-millis: 2000
 
-  # ======================== Flyway ========================
-  # 各 sw-module-xxx 自带迁移脚本于 resources/db/migration/<module>，此处聚合扫描；本轮各目录均为空占位，不含任何 DDL
+  # ======================== Flyway（主迁移，绑定主数据源） ========================
   flyway:
-    enabled: false
+    enabled: true
     locations:
-      - classpath:db/migration/common
-      - classpath:db/migration/storage
-      - classpath:db/migration/security
-      - classpath:db/migration/job
-      - classpath:db/migration/knowledge
-      - classpath:db/migration/notify
-      - classpath:db/migration/system
-      - classpath:db/migration/openapi
-      - classpath:db/migration/workflow
-      - classpath:db/migration/lowcode
-      - classpath:db/migration/agent
-      - classpath:db/migration/iot
+      - classpath:db/migration/{vendor}
     baseline-on-migrate: true
+    validate-on-migrate: true
+    out-of-order: false
     table: flyway_schema_history
 
   # ======================== Redis ========================
@@ -95,6 +95,35 @@ spring:
     access-key: ${MINIO_ACCESS_KEY:}
     secret-key: ${MINIO_SECRET_KEY:}
     bucket: smart-workflow
+
+sw:
+  # ---------- 外部数据源执行引擎 ----------
+  external-datasource:
+    cipher-key: ${SW_CIPHER_KEY:}                                        # AES-256-GCM 密钥（Base64），pro 从环境变量注入
+    pool:
+      max-pool-size: 5
+      min-idle: 0
+      idle-timeout: 600000                                              # 10 min
+      max-lifetime: 1800000                                             # 30 min
+      connection-timeout: 10000                                         # 10 sec
+    execution:
+      max-rows: 1000
+      query-timeout: 30                                                 # 秒
+
+  # ---------- 安全 / JWT ----------
+  security:
+    token-header: Authorization
+    token-prefix: "Bearer "
+    permit-urls:
+      - /swagger-ui.html
+      - /swagger-ui/**
+      - /v3/api-docs/**
+      - /doc.html
+      - /webjars/**
+      - /actuator/**
+    jwt:
+      secret: ${JWT_SECRET:smart-workflow-jwt-secret-CHANGE-ME-IN-PRODUCTION-please}
+      expire-seconds: 7200
 
 # ======================== MyBatis-Plus ========================
 mybatis-plus:

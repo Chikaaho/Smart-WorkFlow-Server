@@ -1,0 +1,2 @@
+com.sw.ck.common.config.mybatis.MybatisPlusConfig
+com.sw.ck.common.config.redis.RedisConfig

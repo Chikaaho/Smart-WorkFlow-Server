@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -31,4 +32,14 @@ public class BaseEntity implements Serializable {
     @TableLogic
     @TableField(fill = FieldFill.INSERT)
     private Integer deleted;
+
+    @TableField(fill = FieldFill.INSERT)
+    private Long tenantId;
+
+    /**
+     * 乐观锁版本号；插入时填充初始值 0，避免首次更新时 version 为 null 导致条件不匹配。
+     */
+    @Version
+    @TableField(fill = FieldFill.INSERT)
+    private Long version;
 }

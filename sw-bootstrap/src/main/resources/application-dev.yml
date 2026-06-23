@@ -5,9 +5,29 @@ server:
   port: 8080
 
 spring:
+  autoconfigure:
+    exclude:
+      # pgvector 需 PostgreSQL 且需单一 EmbeddingModel，dev 的 H2 + 双 AI 模型冲突，排除
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
   datasource:
-    username: ${DATASOURCE_USERNAME:root}
-    password: ${DATASOURCE_PASSWORD:root}
+    dynamic:
+      druid:
+        initial-size: 2
+        min-idle: 1
+        max-active: 5
+      datasource:
+        master:
+          driver-class-name: org.h2.Driver
+          url: jdbc:h2:mem:smart_workflow;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+          username: sa
+          password:
+        # 扩展库示例：IoT 独立 H2 内存库
+        iot:
+          driver-class-name: org.h2.Driver
+          url: jdbc:h2:mem:smart_workflow_iot;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+          username: sa
+          password:
 
   data:
     redis:
@@ -21,8 +41,8 @@ spring:
     ollama:
       base-url: http://localhost:11434
 
-  flyway:
-    enabled: true
+  flowable:
+    database-schema-update: false
 
   mqtt:
     broker:
@@ -39,4 +59,13 @@ logging:
     com.sw.ck: debug
     org.springframework.jdbc: debug
     com.baomidou.mybatisplus: debug
+
+# ======================== 外部数据源（dev 用 H2 测试密钥） ========================
+sw:
+  workflow:
+    enabled: true
+  lowcode:
+    enabled: true
+  external-datasource:
+    cipher-key: "c21hcnQtd29ya2Zsb3ctZGV2LWNpcGhlci1rZXkhIQ=="
 
