@@ -121,6 +121,7 @@ sw:
       - /doc.html
       - /webjars/**
       - /actuator/**
+      - /auth/login
     jwt:
       secret: ${JWT_SECRET:smart-workflow-jwt-secret-CHANGE-ME-IN-PRODUCTION-please}
       expire-seconds: 7200
