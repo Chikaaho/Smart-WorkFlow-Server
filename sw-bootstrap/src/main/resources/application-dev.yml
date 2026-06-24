@@ -64,7 +64,7 @@ logging:
 sw:
   workflow:
     enabled: true
-  lowcode:
+  form:
     enabled: true
   external-datasource:
     cipher-key: "c21hcnQtd29ya2Zsb3ctZGV2LWNpcGhlci1rZXkhIQ=="

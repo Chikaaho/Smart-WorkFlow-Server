@@ -17,20 +17,20 @@ import org.springframework.core.env.Environment;
  * 流程引擎自动配置（Flowable + 外部数据源执行引擎）。
  * <p>
  * 默认关闭，通过 sw.workflow.enabled=true 开启。
- * 运行时强制要求 sw.lowcode.enabled=true，否则启动失败。
+ * 运行时强制要求 sw.form.enabled=true，否则启动失败。
  * </p>
  */
 @AutoConfiguration
-@AutoConfigureAfter(name = "com.sw.ck.lowcode.config.LowcodeAutoConfiguration")
+@AutoConfigureAfter(name = "com.sw.ck.form.config.FormAutoConfiguration")
 @ConditionalOnProperty(prefix = "sw.workflow", name = "enabled", havingValue = "true")
 @EnableConfigurationProperties({WorkflowProperties.class, ExternalDatasourceProperties.class})
 public class WorkflowAutoConfiguration {
 
     public WorkflowAutoConfiguration(Environment environment) {
-        String lowcodeEnabled = environment.getProperty("sw.lowcode.enabled");
-        if (!"true".equals(lowcodeEnabled)) {
+        String formEnabled = environment.getProperty("sw.form.enabled");
+        if (!"true".equals(formEnabled)) {
             throw new IllegalStateException(
-                    "工作流(sw.workflow.enabled=true)必须配合低代码表单使用，请同时设置 sw.lowcode.enabled=true");
+                    "工作流(sw.workflow.enabled=true)必须配合低代码表单使用，请同时设置 sw.form.enabled=true");
         }
     }
 

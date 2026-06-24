@@ -18,7 +18,7 @@
 
     <modules>
         <module>sw-biz-system</module>
-        <module>sw-biz-lowcode</module>
+        <module>sw-biz-form</module>
         <module>sw-biz-workflow</module>
         <module>sw-biz-openapi</module>
     </modules>

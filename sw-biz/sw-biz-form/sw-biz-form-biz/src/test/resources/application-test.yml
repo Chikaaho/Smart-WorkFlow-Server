@@ -1,0 +1,25 @@
+# ===================================================================
+# Smart-WorkFlow :: DynamicTableManager 验证测试配置（H2）
+# ===================================================================
+spring:
+  # H2 内存库，PostgreSQL 模式兼容（对齐项目 vendor 目录）
+  datasource:
+    url: jdbc:h2:mem:dynamictest;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  # 排除不必要的自动配置（我们只需要 DataSource + JdbcTemplate）
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+      - com.sw.ck.common.config.redis.RedisConfig
+      - org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+      - org.springframework.boot.autoconfigure.security.servlet.SecurityFilterAutoConfiguration
+      - com.sw.ck.security.config.SecurityAutoConfiguration
+      - com.sw.ck.security.config.WebSecurityAutoConfiguration
+      - com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceAutoConfiguration
+      - com.sw.ck.common.config.mybatis.MybatisPlusConfig

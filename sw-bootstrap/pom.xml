@@ -91,7 +91,7 @@
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-biz-lowcode-biz</artifactId>
+            <artifactId>sw-biz-form-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
 

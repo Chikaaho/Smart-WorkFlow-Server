@@ -1,0 +1,54 @@
+package com.sw.ck.form.api.exception;
+
+import com.sw.ck.common.exception.ErrorCode;
+
+/**
+ * 表单模块错误码。
+ */
+public enum FormErrorCode implements ErrorCode {
+
+    // ==================== 通用（1000-1099） ====================
+    FORM_NOT_FOUND(1000, "表单不存在"),
+    FORM_KEY_DUPLICATE(1001, "表单标识已存在"),
+    FORM_NAME_DUPLICATE(1002, "表单名称已存在"),
+
+    // ==================== 状态机（1100-1199） ====================
+    FORM_ALREADY_PUBLISHED(1100, "表单已发布，不能修改"),
+    FORM_ALREADY_DRAFT(1101, "表单处于草稿态，不能执行此操作"),
+    FORM_NOT_PUBLISHED(1102, "表单未发布，不能提交数据"),
+
+    // ==================== 发布校验（1200-1299） ====================
+    INVALID_COLUMN_NAME(1200, "字段名不合法"),
+    DUPLICATE_COLUMN(1201, "字段名重复"),
+    TABLE_ALREADY_EXISTS(1202, "动态宽表已存在"),
+    PUBLISH_FAILED(1203, "表单发布失败"),
+
+    // ==================== 渲染（1300-1399） ====================
+    CONFIG_NOT_FOUND(1300, "表单配置未找到"),
+
+    // ==================== 提交校验（1400-1499） ====================
+    SUBMIT_FIELD_UNKNOWN(1400, "提交了未定义的字段"),
+    SUBMIT_FIELD_REQUIRED(1401, "必填字段缺失"),
+    SUBMIT_FIELD_TYPE_MISMATCH(1402, "字段类型不匹配"),
+    SUBMIT_DICT_INVALID(1403, "字典值不在允许范围内"),
+    SUBMIT_FAILED(1499, "表单提交失败"),
+    SUBMIT_DEFINITION_INVALID(1404, "表单定义配置异常");
+
+    private final int code;
+    private final String message;
+
+    FormErrorCode(int code, String message) {
+        this.code = code;
+        this.message = message;
+    }
+
+    @Override
+    public int getCode() {
+        return code;
+    }
+
+    @Override
+    public String getMessage() {
+        return message;
+    }
+}

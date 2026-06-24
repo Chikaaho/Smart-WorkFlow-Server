@@ -147,7 +147,7 @@ java -jar sw-bootstrap.jar \
 | `sw-module-security` | `com.sw.ck.security` | 认证与授权（Spring Security + JWT） |
 | `sw-module-system` | `com.sw.ck.system` | 系统管理（用户、角色、菜单、组织） |
 | `sw-module-workflow` | `com.sw.ck.workflow` | 流程引擎（Flowable 集成） |
-| `sw-module-lowcode` | `com.sw.ck.lowcode` | 低代码（表单、页面、数据源、元数据） |
+| `sw-biz-form` | `com.sw.ck.form` | 低代码（表单、页面、数据源、元数据） |
 | `sw-module-agent` | `com.sw.ck.agent` | AI Agent（Spring AI + LangGraph4j） |
 | `sw-module-knowledge` | `com.sw.ck.knowledge` | 知识库（RAG、文档解析、向量检索） |
 | `sw-module-iot` | `com.sw.ck.iot` | IoT 设备接入（MQTT） |
@@ -188,7 +188,7 @@ java -jar sw-bootstrap.jar \
 | 启动入口 | `sw-bootstrap` | `com.sw.ck.bootstrap` |
 | 系统管理 | `sw-module-system` | `com.sw.ck.system` |
 | 流程引擎 | `sw-module-workflow` | `com.sw.ck.workflow` |
-| 低代码 | `sw-module-lowcode` | `com.sw.ck.lowcode` |
+| 低代码 | `sw-biz-form` | `com.sw.ck.form` |
 | Agent | `sw-module-agent` | `com.sw.ck.agent` |
 | IoT | `sw-module-iot` | `com.sw.ck.iot` |
 
