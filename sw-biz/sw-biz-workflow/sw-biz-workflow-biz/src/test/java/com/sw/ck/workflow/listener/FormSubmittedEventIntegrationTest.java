@@ -396,7 +396,6 @@ class FormSubmittedEventIntegrationTest {
             dbConfig.setLogicDeleteValue("1");
             dbConfig.setLogicNotDeleteValue("0");
             globalConfig.setDbConfig(dbConfig);
-            globalConfig.setIdentifierGenerator(new FormIdGenerator());
             factory.setGlobalConfig(globalConfig);
             MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
             interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());

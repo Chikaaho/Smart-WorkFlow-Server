@@ -12,7 +12,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * </p>
  */
 @SpringBootApplication(scanBasePackages = "com.sw.ck")
-@MapperScan({"com.sw.ck.workflow.mapper", "com.sw.ck.bootstrap.verify"})
+@MapperScan({"com.sw.ck.**.mapper", "com.sw.ck.bootstrap.verify"})
 public class StarterApplication {
 
     public static void main(String[] args) {

@@ -521,7 +521,6 @@ class FormDefinitionServiceTest {
             dbConfig.setLogicDeleteValue("1");
             dbConfig.setLogicNotDeleteValue("0");
             globalConfig.setDbConfig(dbConfig);
-            globalConfig.setIdentifierGenerator(new FormIdGenerator());
             factory.setGlobalConfig(globalConfig);
 
             // MyBatis-Plus 插件

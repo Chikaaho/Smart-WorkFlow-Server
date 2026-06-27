@@ -150,7 +150,7 @@ public class FormSubmitService {
         // ==========================================================
         // Step 5: 构建系统列 + 用户列值
         // ==========================================================
-        String recordId = idGenerator.generateId();
+        String recordId = idGenerator.generate();
         Map<String, Object> systemCols = buildSystemColumns(recordId, tenantId, userId);
 
         // 用户列（按 fieldDefs 顺序构建，排除 TABLE 类型）
@@ -232,7 +232,7 @@ public class FormSubmitService {
             }
 
             for (Map<String, Object> row : rows) {
-                String subRecordId = idGenerator.generateId();
+                String subRecordId = idGenerator.generate();
                 Map<String, Object> subSysCols = buildSystemColumns(subRecordId, tenantId, userId);
                 subSysCols.put("parent_record_id", recordId);
 
@@ -261,7 +261,7 @@ public class FormSubmitService {
         // Step 8: 写入 sw_form_trace
         // ==========================================================
         FormTraceEntity trace = new FormTraceEntity();
-        trace.setId(idGenerator.generateId());
+        trace.setId(idGenerator.generate());
         trace.setFormId(formDef.getId());
         trace.setRecordId(recordId);
         trace.setSubmitUserId(userId);

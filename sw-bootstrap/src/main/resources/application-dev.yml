@@ -23,11 +23,11 @@ spring:
           username: sa
           password:
         # 扩展库示例：IoT 独立 H2 内存库
-        iot:
-          driver-class-name: org.h2.Driver
-          url: jdbc:h2:mem:smart_workflow_iot;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
-          username: sa
-          password:
+        # iot:
+        #   driver-class-name: org.h2.Driver
+        #   url: jdbc:h2:mem:smart_workflow_iot;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+        #   username: sa
+        #   password:
 
   data:
     redis:

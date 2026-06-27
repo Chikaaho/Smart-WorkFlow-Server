@@ -6,13 +6,29 @@ import com.sw.ck.common.security.LoginContextProvider;
 import org.apache.ibatis.reflection.MetaObject;
 
 import java.time.LocalDateTime;
+import java.util.function.Consumer;
 
 public class CommonMetaObjectHandler implements MetaObjectHandler {
 
     private final LoginContextProvider loginContextProvider;
 
+    /**
+     * 表单模块 ID 自动填充钩子，由 form 模块通过 {@link #setFormIdFiller} 注册。
+     * <p>
+     * 默认 no-op，避免 sw-common 对 form 模块的编译期依赖。
+     * </p>
+     */
+    private Consumer<MetaObject> formIdFiller = meta -> {};
+
     public CommonMetaObjectHandler(LoginContextProvider loginContextProvider) {
         this.loginContextProvider = loginContextProvider;
+    }
+
+    /**
+     * 设置表单 ID 自动填充器（由 form 模块的 AutoConfiguration 调用）。
+     */
+    public void setFormIdFiller(Consumer<MetaObject> formIdFiller) {
+        this.formIdFiller = formIdFiller;
     }
 
     @Override
@@ -24,6 +40,8 @@ public class CommonMetaObjectHandler implements MetaObjectHandler {
         strictInsertFill(metaObject, "tenantId", this::currentTenantId, Long.class);
         strictInsertFill(metaObject, "deleted", () -> 0, Integer.class);
         strictInsertFill(metaObject, "version", () -> 0L, Long.class);
+        // 表单模块 ID 自动填充（仅对 FormBaseEntity 生效）
+        formIdFiller.accept(metaObject);
     }
 
     @Override

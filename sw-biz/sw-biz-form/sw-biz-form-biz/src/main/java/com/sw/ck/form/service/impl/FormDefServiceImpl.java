@@ -66,7 +66,7 @@ public class FormDefServiceImpl implements FormDefService {
 
         // —— 创建草稿 ——
         FormDefEntity entity = new FormDefEntity();
-        entity.setId(idGenerator.generateId());
+        entity.setId(idGenerator.generate());
         entity.setFormKey(formKey);
         entity.setName(name);
         entity.setLogicalTableName(logicalTableName);
@@ -82,7 +82,7 @@ public class FormDefServiceImpl implements FormDefService {
 
         // —— 创建空白 config ——
         FormConfigEntity config = new FormConfigEntity();
-        config.setId(idGenerator.generateId());
+        config.setId(idGenerator.generate());
         config.setFormId(entity.getId());
         config.setDefinition("{}");
         config.setCreateTime(LocalDateTime.now());
@@ -130,7 +130,7 @@ public class FormDefServiceImpl implements FormDefService {
         if (config == null) {
             // 创建新的 config 记录
             config = new FormConfigEntity();
-            config.setId(idGenerator.generateId());
+            config.setId(idGenerator.generate());
             config.setFormId(formId);
             config.setDefinition(definition);
             config.setCreateTime(LocalDateTime.now());
@@ -225,7 +225,7 @@ public class FormDefServiceImpl implements FormDefService {
         String definitionJson = (config != null) ? config.getDefinition() : "{}";
 
         FormSnapshotEntity snapshot = new FormSnapshotEntity();
-        snapshot.setId(idGenerator.generateId());
+        snapshot.setId(idGenerator.generate());
         snapshot.setFormId(formId);
         snapshot.setFormVersion(entity.getFormVersion());
         snapshot.setDefinition(definitionJson);

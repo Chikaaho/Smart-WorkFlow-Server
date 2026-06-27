@@ -11,7 +11,7 @@ spring:
     name: smart-workflow
 
   profiles:
-    active: dev
+    active: local
 
   # ======================== 多数据源（dynamic-datasource，主库 = master） ========================
   datasource:
@@ -31,7 +31,7 @@ spring:
           driver-class-name: org.postgresql.Driver
           url: jdbc:postgresql://localhost:5432/smart_workflow
           username: ${DATASOURCE_USERNAME:postgres}
-          password: ${DATASOURCE_PASSWORD:}
+          password: ${DATASOURCE_PASSWORD:123456}
         # 扩展库示例（按需取消注释并补齐连接信息）：
         # iot:
         #   driver-class-name: org.postgresql.Driver
@@ -52,6 +52,9 @@ spring:
     enabled: true
     locations:
       - classpath:db/migration/{vendor}
+      - classpath:db/migration/workflow/{vendor}
+      - classpath:db/migration/notify/{vendor}
+      - classpath:db/migration/form/{vendor}
     baseline-on-migrate: true
     validate-on-migrate: true
     out-of-order: false

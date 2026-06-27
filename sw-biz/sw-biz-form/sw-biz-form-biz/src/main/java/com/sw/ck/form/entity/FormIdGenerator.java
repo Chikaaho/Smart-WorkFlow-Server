@@ -1,21 +1,20 @@
 package com.sw.ck.form.entity;
 
-import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
 
 /**
- * 表单模块 ID 生成器。
+ * 表单业务编号生成器。
  * <p>
  * 生成 UUID v4（36 字符含连字符）作为动态表单及其元数据表的主键。
- * 实现 {@link IdentifierGenerator} 以配合 MyBatis-Plus 的 {@code ASSIGN_UUID} 策略。
+ * 仅作为普通业务组件注入使用，不再承担全局主键生成职责。
  * </p>
  *
  * <p>封装为独立组件，便于将来替换为 UUIDv7 或其他有序 ID 算法时无需改动业务代码。</p>
  */
 @Component
-public class FormIdGenerator implements IdentifierGenerator {
+public class FormIdGenerator {
 
     /**
      * 生成一个 UUID v4 字符串（36 字符，含连字符）。
@@ -23,25 +22,7 @@ public class FormIdGenerator implements IdentifierGenerator {
      *
      * @return UUID 字符串，匹配 VARCHAR(36)
      */
-    public String generateId() {
+    public String generate() {
         return UUID.randomUUID().toString();
-    }
-
-    // ==================== IdentifierGenerator 接口实现 ====================
-
-    @Override
-    public Number nextId(Object entity) {
-        // FormBaseEntity 体系使用 ASSIGN_UUID，不调用此方法
-        throw new UnsupportedOperationException("FormIdGenerator only supports UUID generation; use ASSIGN_UUID strategy");
-    }
-
-    @Override
-    public String nextUUID(Object entity) {
-        return generateId();
-    }
-
-    @Override
-    public boolean assignId(Object idValue) {
-        return true;
     }
 }

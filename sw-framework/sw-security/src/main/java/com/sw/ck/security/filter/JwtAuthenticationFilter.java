@@ -11,7 +11,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.lang.Nullable;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -30,23 +29,22 @@ import java.util.List;
  * 直接读取 {@link LoginUser#getPermissions()}，不使用 Spring Security 的
  * GrantedAuthority/hasAuthority 体系，避免维护两套权限表示。
  * <p>
- * {@code loginUserLoader} 为 null 时（当前仓库还没有任何 {@code UserDetailsProvider} 实现，
- * 该 Bean 处于未装载状态）本过滤器不做任何认证动作、直接放行：未认证请求会在
- * {@code authorizeHttpRequests} 阶段被拦截，仅 {@code sw.security.permit-urls} 白名单可访问，
- * 这就是 Prompt 要求的"临时放行，仅为验证启动"的效果，不需要额外 mock 实现。
+ * {@code loginUserLoader} 由 Spring 托管注入、永不为 null（{@code SecurityAutoConfiguration}
+ * 已改为无条件创建并经 {@code ObjectProvider} 运行期解析 {@code UserDetailsProvider}），因此
+ * 本过滤器不再有「loader 为 null 则整段跳过」的早退逻辑——那曾把「安全链未装配」这一启动期
+ * 缺陷静默降级为对所有请求 401，掩盖了根因。
  * <p>
- * {@code authenticate} 内部统一 catch 异常并降级为"未认证"：本过滤器跑在 DispatcherServlet
- * 之前，不经过 {@code GlobalExceptionHandler}，token 解析失败或 Redis/UserDetailsProvider
- * 回查异常如果不在这里捕获，会被容器渲染成裸 500 页面，而不是统一的 R 结构 401/403——这与
- * Prompt 要求的"统一认证/鉴权异常走 R 返回"相悖，因此在此降级处理，交由后续的
- * authorizeHttpRequests + AuthenticationEntryPoint 统一吐出 401。
+ * 异常分档（CLAUDE.md §8：令牌失败=401 vs 基础设施/装配故障=500/503，不得统一降级）：
+ * 仅 token 自身的解析/校验失败在此 catch 并降级为「未认证」，交由 authorizeHttpRequests +
+ * {@code AuthenticationEntryPoint} 统一吐 401；而 {@code loadByUserId} 内部因
+ * {@code UserDetailsProvider} 缺失（装配故障）或 Redis/回查异常（基础设施故障）抛出的异常
+ * 【不在此 catch】，任其向上传播渲染为 5xx，绝不伪装成 401。
  */
 @Slf4j
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider jwtTokenProvider;
-    @Nullable
     private final LoginUserLoader loginUserLoader;
     private final SecurityProperties securityProperties;
 
@@ -63,29 +61,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void authenticate(HttpServletRequest request) {
-        if (loginUserLoader == null) {
-            return;
-        }
         String token = resolveToken(request);
         if (token == null) {
             return;
         }
+        Long userId;
         try {
             if (!jwtTokenProvider.validate(token)) {
                 return;
             }
-            Long userId = jwtTokenProvider.parseUserId(token);
-            LoginUser loginUser = loginUserLoader.loadByUserId(userId);
-            if (loginUser == null) {
-                return;
-            }
-            LoginUserHolder.set(loginUser);
-            UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(loginUser, null, List.of());
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+            userId = jwtTokenProvider.parseUserId(token);
         } catch (Exception e) {
+            // 仅 token 自身的解析/校验失败 → 视为未认证，交由 AuthenticationEntryPoint 统一吐 401。
             log.warn("JWT 认证失败: {}", e.getMessage());
+            return;
         }
+        // loadByUserId 内部若因 UserDetailsProvider 缺失（装配故障）或 Redis/回查异常（基础设施
+        // 故障）抛出，【刻意不在此 catch】——任其向上传播渲染为 5xx，绝不降级为 401（CLAUDE.md §8）。
+        LoginUser loginUser = loginUserLoader.loadByUserId(userId);
+        if (loginUser == null) {
+            return;
+        }
+        LoginUserHolder.set(loginUser);
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken(loginUser, null, List.of());
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
     private String resolveToken(HttpServletRequest request) {

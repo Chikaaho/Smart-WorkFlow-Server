@@ -7,7 +7,6 @@ import com.sw.ck.security.handler.RestAccessDeniedHandler;
 import com.sw.ck.security.handler.RestAuthenticationEntryPoint;
 import com.sw.ck.security.jwt.JwtTokenProvider;
 import com.sw.ck.security.support.PermissionService;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityFilterAutoConfiguration;
@@ -37,9 +36,9 @@ public class WebSecurityAutoConfiguration {
 
     @Bean
     public JwtAuthenticationFilter jwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider,
-                                                             ObjectProvider<LoginUserLoader> loginUserLoaderProvider,
+                                                             LoginUserLoader loginUserLoader,
                                                              SecurityProperties securityProperties) {
-        return new JwtAuthenticationFilter(jwtTokenProvider, loginUserLoaderProvider.getIfAvailable(), securityProperties);
+        return new JwtAuthenticationFilter(jwtTokenProvider, loginUserLoader, securityProperties);
     }
 
     @Bean
