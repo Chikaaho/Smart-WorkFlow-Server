@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xmlns:flowable="http://flowable.org/bpmn"
+             typeLanguage="http://www.w3.org/2001/XMLSchema"
+             expressionLanguage="http://www.w3.org/1999/XPath"
+             targetNamespace="http://www.flowable.org/processdef">
+    <process id="skeleton_approval" name="Single-Node Approval" isExecutable="true">
+        <startEvent id="startEvent" name="Start"/>
+        <userTask id="approvalTask" name="审批" flowable:assignee="${approver}"/>
+        <endEvent id="endEvent" name="End"/>
+        <sequenceFlow id="flow1" sourceRef="startEvent" targetRef="approvalTask"/>
+        <sequenceFlow id="flow2" sourceRef="approvalTask" targetRef="endEvent"/>
+    </process>
+</definitions>

@@ -1,45 +1,20 @@
 package com.sw.ck.common.entity;
 
 import com.baomidou.mybatisplus.annotation.FieldFill;
-import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
-import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableLogic;
-import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
-import java.io.Serializable;
-import java.time.LocalDateTime;
-
+/**
+ * 通用业务实体基类：继承 {@link BaseEntityNoTenant} 并追加 {@code tenantId} 列。
+ * <p>
+ * 租户级实体（如表 {@code sys_role} / {@code sys_user_role}）应继承此类；
+ * 全局表（如 {@code sys_menu}）应直接继承 {@link BaseEntityNoTenant}。
+ */
 @Data
-public class BaseEntity implements Serializable {
-
-    @TableId(type = IdType.ASSIGN_ID)
-    private Long id;
-
-    @TableField(fill = FieldFill.INSERT)
-    private LocalDateTime createTime;
-
-    @TableField(fill = FieldFill.INSERT)
-    private Long createBy;
-
-    @TableField(fill = FieldFill.INSERT_UPDATE)
-    private LocalDateTime updateTime;
-
-    @TableField(fill = FieldFill.INSERT_UPDATE)
-    private Long updateBy;
-
-    @TableLogic
-    @TableField(fill = FieldFill.INSERT)
-    private Integer deleted;
+@EqualsAndHashCode(callSuper = true)
+public class BaseEntity extends BaseEntityNoTenant {
 
     @TableField(fill = FieldFill.INSERT)
     private Long tenantId;
-
-    /**
-     * 乐观锁版本号；插入时填充初始值 0，避免首次更新时 version 为 null 导致条件不匹配。
-     */
-    @Version
-    @TableField(fill = FieldFill.INSERT)
-    private Long version;
 }

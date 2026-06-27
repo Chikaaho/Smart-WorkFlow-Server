@@ -55,9 +55,15 @@
             <artifactId>sw-biz-form-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 通知门面接口（workflow-biz → notify-api 合法；workflow-api 不引） -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-basic-notify-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.flowable</groupId>
-            <artifactId>flowable-spring-boot-starter</artifactId>
+            <artifactId>flowable-spring-boot-starter-process</artifactId>
         </dependency>
         <!-- SQL 解析（外部数据源执行引擎） -->
         <dependency>
@@ -94,6 +100,13 @@
         <dependency>
             <groupId>com.sw.ck</groupId>
             <artifactId>sw-biz-form-biz</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 通知实现：集成测试验证 sw_notify_message 落库 -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-basic-notify-biz</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>

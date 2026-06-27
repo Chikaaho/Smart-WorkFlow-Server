@@ -3,6 +3,8 @@
 # ===================================================================
 server:
   port: 8080
+  servlet:
+    context-path: /api
 
 spring:
   application:
@@ -97,6 +99,11 @@ spring:
     bucket: smart-workflow
 
 sw:
+  # ---------- 多租户（列级隔离） ----------
+  tenant:
+    ignore-tables:
+      - sys_menu                           # sys_menu 为全局表，无 tenant_id 列，需排除租户拦截器
+
   # ---------- 外部数据源执行引擎 ----------
   external-datasource:
     cipher-key: ${SW_CIPHER_KEY:}                                        # AES-256-GCM 密钥（Base64），pro 从环境变量注入

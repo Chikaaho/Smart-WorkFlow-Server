@@ -49,4 +49,8 @@ public class SysUser extends BaseEntity {
     /** 是否超管：0=否 1=是 */
     @TableField("is_admin")
     private Integer isAdmin;
+
+    /** 头像 URL（V1 DDL 已有 `avatar varchar(200)` 列，此处补映射） */
+    @TableField("avatar")
+    private String avatar;
 }

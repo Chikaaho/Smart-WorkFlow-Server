@@ -1,6 +1,10 @@
 package com.sw.ck.system.config;
 
 import com.sw.ck.security.spi.UserDetailsProvider;
+import com.sw.ck.system.mapper.SysMenuMapper;
+import com.sw.ck.system.mapper.SysRoleMapper;
+import com.sw.ck.system.mapper.SysRoleMenuMapper;
+import com.sw.ck.system.mapper.SysUserRoleMapper;
 import com.sw.ck.system.security.UserDetailsProviderImpl;
 import com.sw.ck.system.service.SysUserService;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -22,10 +26,18 @@ public class SystemAutoConfiguration {
     /**
      * 注册 UserDetailsProvider 实现，触发 sw-security 的 LoginUserCacheService / LoginUserLoader
      * 自动装载（参见 {@link com.sw.ck.security.config.SecurityAutoConfiguration}）。
+     * <p>
+     * 注入 RBAC Mapper 用于组装 roles / permissions / superAdmin（替换旧有 userId==1 硬编）。
+     * </p>
      */
     @Bean
-    public UserDetailsProvider userDetailsProvider(SysUserService sysUserService) {
-        return new UserDetailsProviderImpl(sysUserService);
+    public UserDetailsProvider userDetailsProvider(SysUserService sysUserService,
+                                                   SysUserRoleMapper sysUserRoleMapper,
+                                                   SysRoleMapper sysRoleMapper,
+                                                   SysRoleMenuMapper sysRoleMenuMapper,
+                                                   SysMenuMapper sysMenuMapper) {
+        return new UserDetailsProviderImpl(sysUserService, sysUserRoleMapper, sysRoleMapper,
+                sysRoleMenuMapper, sysMenuMapper);
     }
 
     /**
