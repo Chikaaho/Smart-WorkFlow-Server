@@ -69,14 +69,17 @@ public class FormDefinitionController {
 
     /**
      * 发布表单草稿。
+     * <p>
+     * 字段定义从该表单已存的 config.definition 派生，不再接受外部 body 作为字段来源。
+     * 保留 body 参数仅为 HTTP 兼容（前端可能仍发送），逻辑忽略。
+     * </p>
      *
-     * @param id         表单 ID
-     * @param fieldSpecs 字段规格 JSON（前端设计器提供的字段定义）
+     * @param id 表单 ID
      */
     @PostMapping("/{id}/publish")
-    public R<Void> publish(@PathVariable("id") String id, @RequestBody String fieldSpecs) {
+    public R<Void> publish(@PathVariable("id") String id, @RequestBody(required = false) String body) {
         log.info("Publishing form: id={}", id);
-        formDefService.publish(id, fieldSpecs);
+        formDefService.publish(id);
         return R.ok();
     }
 

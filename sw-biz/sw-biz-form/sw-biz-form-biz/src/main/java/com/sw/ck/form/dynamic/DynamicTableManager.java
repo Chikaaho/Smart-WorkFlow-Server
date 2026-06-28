@@ -55,40 +55,9 @@ public class DynamicTableManager {
             new SystemColumnDef("version", "BIGINT", "NOT NULL DEFAULT 0")
     );
 
-    /** 系统列名集合（用于校验用户列名是否冲突） */
-    private static final Set<String> SYSTEM_COLUMN_NAMES = Collections.unmodifiableSet(
-            new HashSet<>(SYSTEM_COLUMNS.stream().map(SystemColumnDef::name).toList())
-    );
-
-    /** 保留字黑名单（SQL 关键字 + 系统列名，不区分大小写） */
-    private static final Set<String> RESERVED_WORDS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-            "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BETWEEN", "BY", "CHECK", "CREATE",
-            "DELETE", "DESC", "DISTINCT", "DROP", "EXISTS", "FOREIGN", "FROM", "GRANT",
-            "GROUP", "HAVING", "IN", "INDEX", "INSERT", "INTO", "IS", "KEY", "LIKE",
-            "LIMIT", "NOT", "NULL", "OFFSET", "ON", "OR", "ORDER", "PRIMARY",
-            "REFERENCES", "REVOKE", "SELECT", "SET", "TABLE", "UNIQUE", "UPDATE", "VALUES", "WHERE",
-            // 额外的常见关键字
-            "CASCADE", "COMMENT", "COMMIT", "CONSTRAINT", "CURRENT", "CURRENT_TIMESTAMP",
-            "DEFAULT", "DESC", "ELSE", "END", "ESCAPE", "EXCEPT", "EXEC", "EXECUTE",
-            "EXISTS", "EXPLAIN", "FETCH", "FULL", "FUNCTION", "GLOBAL", "IDENTITY",
-            "IF", "IGNORE", "ILIKE", "INNER", "INTERSECT", "INTERVAL", "INTO", "JOIN",
-            "LEADING", "LEFT", "LOCAL", "MATCH", "MERGE", "NATURAL", "NEXT", "NO",
-            "NULLS", "OF", "ONLY", "OUTER", "OVER", "OVERLAPS", "PARTITION", "POSITION",
-            "PRECISION", "RANGE", "RECURSIVE", "REPLACE", "RESTRICT", "RETURNING",
-            "RIGHT", "ROLLBACK", "ROW", "ROWS", "SCHEMA", "SESSION", "SIMILAR",
-            "SOME", "START", "SYMMETRIC", "SYSTEM", "TABLESPACE", "TEMP", "TEMPORARY",
-            "THEN", "TRAILING", "TRANSACTION", "TRIGGER", "TRUNCATE", "UNION", "UNNEST",
-            "USING", "VACUUM", "VARYING", "VIEW", "WHEN", "WHENEVER", "WINDOW", "WITH", "WITHIN"
-    )));
-
-    /** 前缀黑名单 */
-    private static final String[] PREFIX_BLACKLIST = {"sys_", "sw_", "act_"};
-
-    /** 列名最大长度（PostgreSQL 标识符上限） */
-    private static final int MAX_COLUMN_NAME_LENGTH = 63;
-
-    /** 列名白名单正则 */
-    private static final String COLUMN_NAME_PATTERN = "^[a-z_][a-z0-9_]*$";
+    // 列名校验常量与方法均收敛至 ColumnValidation（单一常量源），
+    // 本类仅保留 DDL 构建所需的 SYSTEM_COLUMNS（含类型与约束）。
+    // validateColumnName() 委托给 ColumnValidation.validateColumnName()。
 
     // ==================== 实例状态 ====================
 
@@ -137,44 +106,7 @@ public class DynamicTableManager {
      * @throws IllegalArgumentException 列名不符合规则时抛出
      */
     public void validateColumnName(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            throw new IllegalArgumentException("Column name must not be null or empty");
-        }
-
-        String trimmed = name.trim();
-
-        // —— 长度 ——
-        if (trimmed.length() > MAX_COLUMN_NAME_LENGTH) {
-            throw new IllegalArgumentException(
-                    "Column name too long (max " + MAX_COLUMN_NAME_LENGTH + "): '"
-                            + trimmed + "' (" + trimmed.length() + " chars)");
-        }
-
-        // —— 正则白名单 ——
-        if (!trimmed.matches(COLUMN_NAME_PATTERN)) {
-            throw new IllegalArgumentException(
-                    "Invalid column name: '" + trimmed + "' — must match " + COLUMN_NAME_PATTERN);
-        }
-
-        // —— 系统列冲突 ——
-        if (SYSTEM_COLUMN_NAMES.contains(trimmed)) {
-            throw new IllegalArgumentException(
-                    "Column name conflicts with system column: '" + trimmed + "'");
-        }
-
-        // —— 前缀黑名单 ——
-        for (String prefix : PREFIX_BLACKLIST) {
-            if (trimmed.startsWith(prefix)) {
-                throw new IllegalArgumentException(
-                        "Column name must not start with '" + prefix + "': '" + trimmed + "'");
-            }
-        }
-
-        // —— SQL 保留字 ——
-        if (RESERVED_WORDS.contains(trimmed.toUpperCase())) {
-            throw new IllegalArgumentException(
-                    "Column name is a reserved SQL keyword: '" + trimmed + "'");
-        }
+        ColumnValidation.validateColumnName(name);
     }
 
     // ==================== 建表 ====================

@@ -42,21 +42,25 @@ public interface FormDefService {
     /**
      * 发布表单草稿。
      * <p>
+     * 字段定义从该表单已存的 {@code sw_form_config.definition.fields} 派生建表，
+     * 不再接受外部 fieldSpecs 入参（definition 是唯一字段真源）。
+     * </p>
+     * <p>
      * 事务边界：
      * <ol>
+     *   <li>加载 config.definition 并解析校验字段</li>
      *   <li>校验：逻辑表名 + 所有字段名列名过白名单</li>
      *   <li>创建动态宽表（DynamicTableManager.createFormTable）</li>
-     *   <li>回填 physical_table_name → status=PUBLISHED</li>
+     *   <li>回填 physical_table_name / table_name / parent_table → status=PUBLISHED</li>
      *   <li>存一版 definition 到 sw_form_snapshot</li>
      * </ol>
      * DDL 在多数数据库不可回滚，因此校验先行，建表成功后改元数据，
      * 避免半成品状态。
      * </p>
      *
-     * @param formId     表单 ID
-     * @param fieldSpecs 字段规格列表（JSON 字符串，由前端定义）
+     * @param formId 表单 ID
      */
-    void publish(String formId, String fieldSpecs);
+    void publish(String formId);
 
     /**
      * 根据 ID 获取表单定义 DTO。

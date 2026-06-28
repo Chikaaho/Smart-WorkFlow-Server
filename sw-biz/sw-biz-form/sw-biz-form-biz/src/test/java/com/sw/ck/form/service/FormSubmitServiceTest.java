@@ -163,13 +163,7 @@ class FormSubmitServiceTest {
         formDefService.saveConfig(draft.getId(), definitionJson);
 
         // 发布
-        formDefService.publish(draft.getId(), """
-                [
-                    {"name": "full_name", "type": "TEXT"},
-                    {"name": "age", "type": "NUMBER"},
-                    {"name": "is_active", "type": "BOOL"}
-                ]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         String tableName = entity.getPhysicalTableName();
         assertThat(tableName).as("physical_table_name 应在发布后回填").isNotNull();
@@ -271,16 +265,7 @@ class FormSubmitServiceTest {
         formDefService.saveConfig(draft.getId(), definitionJson);
 
         // 发布（TABLE 字段在 fieldSpecs 中用相同结构）
-        formDefService.publish(draft.getId(), """
-                [
-                    {"name": "applicant", "type": "TEXT"},
-                    {"name": "inspection_items", "type": "TABLE", "subFields": [
-                        {"name": "item_name", "type": "TEXT"},
-                        {"name": "quantity", "type": "NUMBER"},
-                        {"name": "remark", "type": "TEXT"}
-                    ]}
-                ]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -370,9 +355,7 @@ class FormSubmitServiceTest {
                 }
                 """;
         formDefService.saveConfig(draft.getId(), definitionJson);
-        formDefService.publish(draft.getId(), """
-                [{"name": "gender", "type": "DICT", "dictType": "sys_user_sex"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -416,9 +399,7 @@ class FormSubmitServiceTest {
                 {"fields": [{"name": "known_field", "type": "TEXT"}]}
                 """;
         formDefService.saveConfig(draft.getId(), definitionJson);
-        formDefService.publish(draft.getId(), """
-                [{"name": "known_field", "type": "TEXT"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -458,9 +439,7 @@ class FormSubmitServiceTest {
                 {"fields": [{"name": "msg", "type": "TEXT"}]}
                 """;
         formDefService.saveConfig(draft.getId(), definitionJson);
-        formDefService.publish(draft.getId(), """
-                [{"name": "msg", "type": "TEXT"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -512,16 +491,18 @@ class FormSubmitServiceTest {
 
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS sw_form_config (
-                    id          VARCHAR(36)  PRIMARY KEY,
-                    form_id     VARCHAR(36)  NOT NULL,
-                    definition  CLOB         NOT NULL,
-                    tenant_id   BIGINT       NOT NULL DEFAULT 0,
-                    deleted     SMALLINT     NOT NULL DEFAULT 0,
-                    create_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    create_by   BIGINT,
-                    update_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    update_by   BIGINT,
-                    version     BIGINT       NOT NULL DEFAULT 0
+                    id           VARCHAR(36)  PRIMARY KEY,
+                    form_id      VARCHAR(36)  NOT NULL,
+                    table_name   VARCHAR(200),
+                    parent_table VARCHAR(200),
+                    definition   CLOB         NOT NULL,
+                    tenant_id    BIGINT       NOT NULL DEFAULT 0,
+                    deleted      SMALLINT     NOT NULL DEFAULT 0,
+                    create_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    create_by    BIGINT,
+                    update_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_by    BIGINT,
+                    version      BIGINT       NOT NULL DEFAULT 0
                 )
                 """);
 

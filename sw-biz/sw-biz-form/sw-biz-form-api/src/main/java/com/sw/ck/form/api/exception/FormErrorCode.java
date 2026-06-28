@@ -22,6 +22,11 @@ public enum FormErrorCode implements ErrorCode {
     DUPLICATE_COLUMN(1201, "字段名重复"),
     TABLE_ALREADY_EXISTS(1202, "动态宽表已存在"),
     PUBLISH_FAILED(1203, "表单发布失败"),
+    FIELD_TYPE_UNKNOWN(1204, "字段类型未知"),
+    FIELD_TYPE_DISABLED(1205, "字段类型暂不允许发布"),
+    FIELD_ATTR_MISSING(1206, "字段缺少必要属性"),
+    FIELD_NESTED_TABLE(1207, "表格字段不能嵌套"),
+    DEFINITION_INVALID(1208, "表单定义配置异常"),
 
     // ==================== 渲染（1300-1399） ====================
     CONFIG_NOT_FOUND(1300, "表单配置未找到"),

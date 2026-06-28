@@ -113,7 +113,7 @@ public class FieldSpec {
     }
 
     /**
-     * 获取该字段的实际物理列名。
+     * 获取该字段的实际物理列名（委托 {@link ColumnValidation#physicalColumnName} 单一出口）。
      * <ul>
      *   <li>普通字段 → fieldName 原值</li>
      *   <li>REFERENCE → {@code ref_{fieldName}_id}</li>
@@ -121,12 +121,6 @@ public class FieldSpec {
      * </ul>
      */
     public String getPhysicalColumnName() {
-        if (fieldType == FieldType.TABLE) {
-            throw new IllegalStateException("TABLE type fields do not produce a column in the parent table");
-        }
-        if (fieldType == FieldType.REFERENCE) {
-            return "ref_" + fieldName + "_id";
-        }
-        return fieldName;
+        return ColumnValidation.physicalColumnName(fieldName, fieldType);
     }
 }

@@ -149,9 +149,7 @@ class FormSubmittedEventIntegrationTest {
         formDefService.saveConfig(draft.getId(), """
                 {"fields": [{"name": "field1", "type": "TEXT", "required": true}]}
                 """);
-        formDefService.publish(draft.getId(), """
-                [{"name": "field1", "type": "TEXT"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -196,9 +194,7 @@ class FormSubmittedEventIntegrationTest {
         formDefService.saveConfig(draft.getId(), """
                 {"fields": [{"name": "field1", "type": "TEXT", "required": true}]}
                 """);
-        formDefService.publish(draft.getId(), """
-                [{"name": "field1", "type": "TEXT"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -256,16 +252,18 @@ class FormSubmittedEventIntegrationTest {
 
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS sw_form_config (
-                    id          VARCHAR(36)  PRIMARY KEY,
-                    form_id     VARCHAR(36)  NOT NULL,
-                    definition  CLOB         NOT NULL,
-                    tenant_id   BIGINT       NOT NULL DEFAULT 0,
-                    deleted     SMALLINT     NOT NULL DEFAULT 0,
-                    create_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    create_by   BIGINT,
-                    update_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    update_by   BIGINT,
-                    version     BIGINT       NOT NULL DEFAULT 0
+                    id           VARCHAR(36)  PRIMARY KEY,
+                    form_id      VARCHAR(36)  NOT NULL,
+                    table_name   VARCHAR(200),
+                    parent_table VARCHAR(200),
+                    definition   CLOB         NOT NULL,
+                    tenant_id    BIGINT       NOT NULL DEFAULT 0,
+                    deleted      SMALLINT     NOT NULL DEFAULT 0,
+                    create_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    create_by    BIGINT,
+                    update_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_by    BIGINT,
+                    version      BIGINT       NOT NULL DEFAULT 0
                 )
                 """);
 

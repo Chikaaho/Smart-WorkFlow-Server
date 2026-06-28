@@ -11,7 +11,9 @@ import com.sw.ck.common.event.DomainEventPublisher;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.form.api.event.FormSubmittedEvent;
 import com.sw.ck.form.api.exception.FormErrorCode;
+import com.sw.ck.form.dynamic.ColumnValidation;
 import com.sw.ck.form.dynamic.DynamicTableManager;
+import com.sw.ck.form.dynamic.FieldType;
 import com.sw.ck.form.entity.*;
 import com.sw.ck.form.mapper.FormConfigMapper;
 import com.sw.ck.form.mapper.FormDefMapper;
@@ -168,7 +170,7 @@ public class FormSubmitService {
                 continue; // TABLE 不在主表加列
             }
 
-            String colName = convertToColumnName(fieldName, def.type);
+            String colName = ColumnValidation.physicalColumnName(fieldName, FieldType.valueOf(def.type));
             Object value = submittedData.get(fieldName);
 
             // BOOL 类型转换：true/false → 1/0
@@ -227,7 +229,7 @@ public class FormSubmitService {
             List<String> subUserColumns = new ArrayList<>();
             if (tableFieldDef != null && tableFieldDef.subFields != null) {
                 for (FieldDef subDef : tableFieldDef.subFields) {
-                    subUserColumns.add(convertToColumnName(subDef.name, subDef.type));
+                    subUserColumns.add(ColumnValidation.physicalColumnName(subDef.name, FieldType.valueOf(subDef.type)));
                 }
             }
 
@@ -301,9 +303,10 @@ public class FormSubmitService {
      * @return 字段名 → FieldDef 映射
      */
     private Map<String, FieldDef> loadAndParseFieldDefs(String formId, Map<String, Object> submittedData) {
-        // 从 sw_form_config 加载 definition JSON
+        // 从 sw_form_config 加载主表 definition JSON（form_id 对应多行时，取 parent_table IS NULL 的主表行）
         LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId);
+                .eq(FormConfigEntity::getFormId, formId)
+                .isNull(FormConfigEntity::getParentTable);
         FormConfigEntity config = formConfigMapper.selectOne(configQuery);
         String definitionJson = (config != null) ? config.getDefinition() : null;
 
@@ -488,15 +491,7 @@ public class FormSubmitService {
         return "INSERT INTO \"" + tableName + "\" (" + quotedCols + ") VALUES (" + placeholders + ")";
     }
 
-    /**
-     * 字段名列转换：REFERENCE → {@code ref_{name}_id}，其余原值。
-     */
-    private String convertToColumnName(String fieldName, String type) {
-        if ("REFERENCE".equals(type)) {
-            return "ref_" + fieldName + "_id";
-        }
-        return fieldName;
-    }
+    // convertToColumnName() 已删除，改为调用 ColumnValidation.physicalColumnName() 单一出口
 
     /**
      * BOOL 值转换：true/false/"true"/"false"/1/0 → 1/0（SMALLINT）。

@@ -150,25 +150,26 @@ class FormDefinitionServiceTest {
     @Test
     @DisplayName("发布草稿 → 物理表建出 + physical_table_name 回填 + status=PUBLISHED + snapshot 存一版")
     void publishDraft_shouldCreatePhysicalTable() {
-        // —— Arrange：先建草稿，再保存 config ——
+        // —— Arrange：先建草稿，再保存 config（definition 是唯一字段真源） ——
         FormDefDTO draft = formDefService.createDraft("it_application", "IT申请", "it_request", "IT资源申请");
         createdFormIds.add(draft.getId());
 
-        String definitionJson = "{\"layout\": \"vbox\", \"fields\": [{\"name\": \"applicant\", \"type\": \"text\"}]}";
+        String definitionJson = """
+                {
+                    "fields": [
+                        {"name": "applicant_name", "type": "TEXT"},
+                        {"name": "department", "type": "DICT", "dictType": "sys_dept"},
+                        {"name": "budget", "type": "NUMBER"},
+                        {"name": "start_date", "type": "DATE"},
+                        {"name": "is_urgent", "type": "BOOL"},
+                        {"name": "description", "type": "RICH_TEXT"}
+                    ]
+                }
+                """;
         formDefService.saveConfig(draft.getId(), definitionJson);
 
-        // —— Act：发布 ——
-        String fieldSpecs = """
-                [
-                    {"name": "applicant_name", "type": "TEXT"},
-                    {"name": "department", "type": "DICT", "dictType": "sys_dept"},
-                    {"name": "budget", "type": "NUMBER"},
-                    {"name": "start_date", "type": "DATE"},
-                    {"name": "is_urgent", "type": "BOOL"},
-                    {"name": "description", "type": "RICH_TEXT"}
-                ]
-                """;
-        formDefService.publish(draft.getId(), fieldSpecs);
+        // —— Act：发布（不再传 fieldSpecs，从 definition 派生） ——
+        formDefService.publish(draft.getId());
 
         // —— Assert 1: 元数据更新 ——
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
@@ -218,9 +219,10 @@ class FormDefinitionServiceTest {
         // —— Arrange ——
         FormDefDTO draft = formDefService.createDraft("test_pub", "测试发布", null, null);
         createdFormIds.add(draft.getId());
-        formDefService.publish(draft.getId(), """
-                [{"name": "field_a", "type": "TEXT"}]
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "field_a", "type": "TEXT"}]}
                 """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -243,11 +245,12 @@ class FormDefinitionServiceTest {
         // —— Arrange ——
         FormDefDTO draft = formDefService.createDraft("test_invalid", "测试非法", null, null);
         createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "malicious; DROP TABLE", "type": "TEXT"}]}
+                """);
 
         // —— Act & Assert ——
-        assertThatThrownBy(() -> formDefService.publish(draft.getId(), """
-                [{"name": "malicious; DROP TABLE", "type": "TEXT"}]
-                """))
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
                 .isInstanceOf(BaseException.class);
 
         // 确认无动态宽表被创建
@@ -270,13 +273,14 @@ class FormDefinitionServiceTest {
     void publishWithDuplicateColumn_shouldReject() {
         FormDefDTO draft = formDefService.createDraft("test_dup", "测试重复", null, null);
         createdFormIds.add(draft.getId());
-
-        assertThatThrownBy(() -> formDefService.publish(draft.getId(), """
-                [
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [
                     {"name": "same_field", "type": "TEXT"},
                     {"name": "same_field", "type": "NUMBER"}
-                ]
-                """))
+                ]}
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
                 .isInstanceOf(BaseException.class)
                 .satisfies(e -> {
                     BaseException be = (BaseException) e;
@@ -295,7 +299,10 @@ class FormDefinitionServiceTest {
         FormDefDTO draft = formDefService.createDraft("render_test", "渲染测试", null, "测试用");
         createdFormIds.add(draft.getId());
 
-        String definitionJson = "{\"title\": \"测试表单\", \"fields\": [{\"name\": \"username\", \"type\": \"text\"}]}";
+        // 使用可发布的 definition（type 必须为合法 FieldType 大写）
+        String definitionJson = """
+                {"title": "测试表单", "fields": [{"name": "username", "type": "TEXT"}]}
+                """;
         formDefService.saveConfig(draft.getId(), definitionJson);
 
         // —— Act：按 ID 取 ——
@@ -313,9 +320,7 @@ class FormDefinitionServiceTest {
         assertThat(queried.getStatus()).isEqualTo(FormStatusEnum.DRAFT.getCode());
 
         // —— 也验证已发布表单的渲染 ——
-        formDefService.publish(draft.getId(), """
-                [{"name": "username", "type": "TEXT"}]
-                """);
+        formDefService.publish(draft.getId());
         FormDefEntity entity = formDefMapper.selectById(draft.getId());
         createdTables.add(entity.getPhysicalTableName());
 
@@ -338,6 +343,116 @@ class FormDefinitionServiceTest {
                 .satisfies(e -> {
                     BaseException be = (BaseException) e;
                     assertThat(be.getCode()).isEqualTo(FormErrorCode.FORM_KEY_DUPLICATE.getCode());
+                });
+    }
+
+    // ==================== 测试 8：disabled 类型发布 → 拒绝 ====================
+
+    @Test
+    @DisplayName("disabled 类型（MULTISELECT）发布 → 拒绝")
+    void publishWithDisabledType_shouldReject() {
+        FormDefDTO draft = formDefService.createDraft("test_disabled", "测试禁用类型", null, null);
+        createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "tags", "type": "MULTISELECT"}]}
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(e -> {
+                    BaseException be = (BaseException) e;
+                    assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_TYPE_DISABLED.getCode());
+                });
+
+        // 确认无动态宽表被创建
+        FormDefEntity entity = formDefMapper.selectById(draft.getId());
+        assertThat(entity.getStatus()).isEqualTo(FormStatusEnum.DRAFT.getCode());
+    }
+
+    // ==================== 测试 9：TABLE 套 TABLE 递归 → 拒绝 ====================
+
+    @Test
+    @DisplayName("subFields 内含 TABLE → 递归禁止拦截")
+    void publishWithNestedTable_shouldReject() {
+        FormDefDTO draft = formDefService.createDraft("test_nested", "测试嵌套TABLE", null, null);
+        createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {
+                    "fields": [
+                        {"name": "outer_table", "type": "TABLE", "subFields": [
+                            {"name": "inner_table", "type": "TABLE", "subFields": [
+                                {"name": "x", "type": "TEXT"}
+                            ]}
+                        ]}
+                    ]
+                }
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(e -> {
+                    BaseException be = (BaseException) e;
+                    assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_NESTED_TABLE.getCode());
+                    assertThat(be.getMessage()).contains("禁止递归");
+                });
+
+        System.out.println("=== 递归 TABLE 发布被拦截 ✓ ===");
+    }
+
+    // ==================== 测试 10：DICT 缺 dictType → 拒绝 ====================
+
+    @Test
+    @DisplayName("DICT 字段缺 dictType → 拒绝")
+    void publishDictWithoutDictType_shouldReject() {
+        FormDefDTO draft = formDefService.createDraft("test_nodt", "测试缺dictType", null, null);
+        createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "gender", "type": "DICT"}]}
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(e -> {
+                    BaseException be = (BaseException) e;
+                    assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_ATTR_MISSING.getCode());
+                });
+    }
+
+    // ==================== 测试 11：REFERENCE 缺 targetFormId → 拒绝 ====================
+
+    @Test
+    @DisplayName("REFERENCE 字段缺 targetFormId → 拒绝")
+    void publishRefWithoutTarget_shouldReject() {
+        FormDefDTO draft = formDefService.createDraft("test_notarget", "测试缺target", null, null);
+        createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "dept", "type": "REFERENCE"}]}
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(e -> {
+                    BaseException be = (BaseException) e;
+                    assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_ATTR_MISSING.getCode());
+                });
+    }
+
+    // ==================== 测试 12：TABLE 空 subFields → 拒绝 ====================
+
+    @Test
+    @DisplayName("TABLE 字段 subFields 为空 → 拒绝")
+    void publishTableWithEmptySubFields_shouldReject() {
+        FormDefDTO draft = formDefService.createDraft("test_emptysub", "测试空子字段", null, null);
+        createdFormIds.add(draft.getId());
+        formDefService.saveConfig(draft.getId(), """
+                {"fields": [{"name": "items", "type": "TABLE", "subFields": []}]}
+                """);
+
+        assertThatThrownBy(() -> formDefService.publish(draft.getId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(e -> {
+                    BaseException be = (BaseException) e;
+                    assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_ATTR_MISSING.getCode());
                 });
     }
 
@@ -369,16 +484,18 @@ class FormDefinitionServiceTest {
         // PostgreSQL 生产环境使用 JSONB（见 Flyway 脚本）。
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS sw_form_config (
-                    id          VARCHAR(36)  PRIMARY KEY,
-                    form_id     VARCHAR(36)  NOT NULL,
-                    definition  CLOB         NOT NULL,
-                    tenant_id   BIGINT       NOT NULL DEFAULT 0,
-                    deleted     SMALLINT     NOT NULL DEFAULT 0,
-                    create_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    create_by   BIGINT,
-                    update_time TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    update_by   BIGINT,
-                    version     BIGINT       NOT NULL DEFAULT 0
+                    id           VARCHAR(36)  PRIMARY KEY,
+                    form_id      VARCHAR(36)  NOT NULL,
+                    table_name   VARCHAR(200),
+                    parent_table VARCHAR(200),
+                    definition   CLOB         NOT NULL,
+                    tenant_id    BIGINT       NOT NULL DEFAULT 0,
+                    deleted      SMALLINT     NOT NULL DEFAULT 0,
+                    create_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    create_by    BIGINT,
+                    update_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    update_by    BIGINT,
+                    version      BIGINT       NOT NULL DEFAULT 0
                 )
                 """);
 

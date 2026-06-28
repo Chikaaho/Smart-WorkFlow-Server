@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.form.api.dto.FormDefDTO;
 import com.sw.ck.form.api.exception.FormErrorCode;
+import com.sw.ck.form.dynamic.ColumnValidation;
 import com.sw.ck.form.dynamic.DynamicTableManager;
 import com.sw.ck.form.dynamic.FieldSpec;
 import com.sw.ck.form.dynamic.FieldType;
@@ -149,7 +150,7 @@ public class FormDefServiceImpl implements FormDefService {
     }
 
     @Override
-    public void publish(String formId, String fieldSpecs) {
+    public void publish(String formId) {
         // —— Step 1: 加载并校验状态 ——
         FormDefEntity entity = formDefMapper.selectById(formId);
         if (entity == null) {
@@ -159,30 +160,28 @@ public class FormDefServiceImpl implements FormDefService {
             throw new BaseException(FormErrorCode.FORM_ALREADY_PUBLISHED, "表单已发布，不能重复发布");
         }
 
-        // —— Step 2: 解析 fieldSpecs JSON ——
-        List<FieldSpec> fields = parseFieldSpecs(fieldSpecs);
+        // —— Step 2: 加载 config.definition 并解析校验字段（唯一字段真源） ——
+        LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
+                .eq(FormConfigEntity::getFormId, formId);
+        FormConfigEntity config = formConfigMapper.selectOne(configQuery);
+        String definitionJson = (config != null) ? config.getDefinition() : "{}";
 
-        // —— Step 3: 校验字段名白名单（复用 DynamicTableManager.validateColumnName） ——
-        // 逻辑表名校验（如果有）
+        List<FieldSpec> fields = parseAndValidateFieldsFromDefinition(definitionJson);
+
+        // —— Step 3: 校验字段名白名单（复用 ColumnValidation） ——
         if (entity.getLogicalTableName() != null && !entity.getLogicalTableName().isBlank()) {
-            dynamicTableManager.validateColumnName(entity.getLogicalTableName());
+            ColumnValidation.validateColumnName(entity.getLogicalTableName());
         }
-        // 每个字段名校验
         Set<String> columnNames = new HashSet<>();
         for (FieldSpec field : fields) {
-            String physicalName;
+            if (field.getFieldType() == FieldType.TABLE) continue; // 不产生列
+            String physicalName = field.getPhysicalColumnName();
             try {
-                physicalName = field.getPhysicalColumnName();
-            } catch (IllegalStateException e) {
-                // TABLE 类型没有 physical column name，跳过
-                continue;
-            }
-            try {
-                dynamicTableManager.validateColumnName(physicalName);
+                ColumnValidation.validateColumnName(physicalName);
             } catch (IllegalArgumentException e) {
-                throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME, "字段名不合法: '" + physicalName + "' — " + e.getMessage());
+                throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME,
+                        "字段名不合法: '" + physicalName + "' — " + e.getMessage());
             }
-            // 重复字段名检查
             if (!columnNames.add(physicalName)) {
                 throw new BaseException(FormErrorCode.DUPLICATE_COLUMN, "字段名重复: '" + physicalName + "'");
             }
@@ -210,7 +209,7 @@ public class FormDefServiceImpl implements FormDefService {
             }
         }
 
-        // —— Step 5: 更新表单元数据 ——
+        // —— Step 5: 回填表单元数据 + sw_form_config 的 table_name/parent_table ——
         entity.setPhysicalTableName(physicalTableName);
         entity.setStatus(FormStatusEnum.PUBLISHED.getCode());
         entity.setFormVersion(entity.getFormVersion() == null ? 1 : entity.getFormVersion() + 1);
@@ -218,12 +217,34 @@ public class FormDefServiceImpl implements FormDefService {
         entity.setUpdateTime(LocalDateTime.now());
         formDefMapper.updateById(entity);
 
-        // —— Step 6: 存快照 ——
-        LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId);
-        FormConfigEntity config = formConfigMapper.selectOne(configQuery);
-        String definitionJson = (config != null) ? config.getDefinition() : "{}";
+        // 回填主表单的 sw_form_config 行：table_name = physicalTableName
+        if (config != null) {
+            config.setTableName(physicalTableName);
+            // parent_table 对主表单留空
+            formConfigMapper.updateById(config);
+        }
 
+        // 回填每个 TABLE 子表的 sw_form_config 行：parent_table = 主表 table_name
+        for (Map.Entry<String, String> entry : subTableNameSink.entrySet()) {
+            String subFieldName = entry.getKey();
+            String subTableName = entry.getValue();
+            FormConfigEntity subConfig = new FormConfigEntity();
+            subConfig.setId(idGenerator.generate());
+            subConfig.setFormId(formId);
+            subConfig.setTableName(subTableName);
+            subConfig.setParentTable(physicalTableName);
+            // 子表 definition = 该 TABLE 字段的 subFields 序列化
+            String subDefinition = buildSubTableDefinition(fields, subFieldName);
+            subConfig.setDefinition(subDefinition);
+            subConfig.setCreateTime(LocalDateTime.now());
+            subConfig.setUpdateTime(LocalDateTime.now());
+            subConfig.setTenantId(0L);
+            subConfig.setDeleted(0);
+            subConfig.setVersion(0L);
+            formConfigMapper.insert(subConfig);
+        }
+
+        // —— Step 6: 存快照 ——
         FormSnapshotEntity snapshot = new FormSnapshotEntity();
         snapshot.setId(idGenerator.generate());
         snapshot.setFormId(formId);
@@ -298,47 +319,106 @@ public class FormDefServiceImpl implements FormDefService {
                 .build();
     }
 
+    // ==================== definition 解析校验闸门（唯一闸门） ====================
+
     /**
-     * 解析前端提交的字段规格 JSON 为 FieldSpec 列表。
+     * 从 definition JSON 解析字段并执行全栈校验。
      * <p>
-     * 期望 JSON 格式：
-     * <pre>
-     * [
-     *   {"name": "full_name", "type": "TEXT"},
-     *   {"name": "age", "type": "NUMBER"},
-     *   {"name": "gender", "type": "DICT", "dictType": "sys_user_sex"},
-     *   {"name": "dept", "type": "REFERENCE", "targetFormId": "it_application"},
-     *   {"name": "items", "type": "TABLE", "subFields": [
-     *     {"name": "item_name", "type": "TEXT"},
-     *     {"name": "qty", "type": "NUMBER"}
-     *   ]}
-     * ]
-     * </pre>
+     * 期望格式：{@code {"fields": [...]}} 或顶层数组（兼容旧格式）。
+     * definition 是唯一字段真源——不再接受外部 fieldSpecs 入参。
+     * </p>
+     *
+     * <h3>校验项（任一不过抛对应 FormErrorCode）</h3>
+     * <ol>
+     *   <li>type 字面量 ∈ FieldType 且 enabled=true</li>
+     *   <li>列名过 ColumnValidation（白名单正则/保留字/前缀/长度）</li>
+     *   <li>同级重复列名拒绝</li>
+     *   <li>DICT 必须带 dictType</li>
+     *   <li>REFERENCE 必须带 targetFormId</li>
+     *   <li>TABLE 必须带 subFields；subFields 内不得再含 TABLE（禁递归）</li>
+     *   <li>subFields 内字段过全部上述校验</li>
+     * </ol>
+     *
+     * @param definitionJson config.definition JSON
+     * @return 校验通过的字段规格列表
+     * @throws BaseException 校验失败
      */
-    List<FieldSpec> parseFieldSpecs(String json) {
-        if (json == null || json.isBlank()) {
-            throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME, "字段规格不能为空");
+    List<FieldSpec> parseAndValidateFieldsFromDefinition(String definitionJson) {
+        if (definitionJson == null || definitionJson.isBlank() || "{}".equals(definitionJson.trim())) {
+            throw new BaseException(FormErrorCode.DEFINITION_INVALID, "表单 definition 为空，不能发布");
         }
         try {
-            JsonNode root = objectMapper.readTree(json);
-            if (!root.isArray()) {
-                throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME, "字段规格应为 JSON 数组");
+            JsonNode root = objectMapper.readTree(definitionJson);
+            JsonNode fieldsArray = root.get("fields");
+            if (fieldsArray == null || !fieldsArray.isArray()) {
+                // 兼容旧格式：顶层数组
+                if (root.isArray()) {
+                    fieldsArray = root;
+                } else {
+                    throw new BaseException(FormErrorCode.DEFINITION_INVALID,
+                            "definition 中缺少 fields 数组");
+                }
+            }
+            if (fieldsArray.isEmpty()) {
+                throw new BaseException(FormErrorCode.DEFINITION_INVALID, "definition 的 fields 数组为空");
             }
             List<FieldSpec> fields = new ArrayList<>();
-            for (JsonNode node : root) {
-                fields.add(parseFieldNode(node));
+            for (JsonNode node : fieldsArray) {
+                fields.add(parseFieldNodeFromDefinition(node, false));
             }
             return fields;
         } catch (JsonProcessingException e) {
-            throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME, "字段规格 JSON 解析失败: " + e.getMessage());
+            throw new BaseException(FormErrorCode.DEFINITION_INVALID,
+                    "definition JSON 解析失败: " + e.getMessage());
         }
     }
 
-    private FieldSpec parseFieldNode(JsonNode node) {
+    /**
+     * 从 definition JSON 的单字段节点解析为 FieldSpec（含全栈校验）。
+     *
+     * @param node        JSON 节点
+     * @param isSubField  是否在 TABLE subFields 内（用于递归禁止检查）
+     * @return FieldSpec
+     * @throws BaseException 校验失败
+     */
+    private FieldSpec parseFieldNodeFromDefinition(JsonNode node, boolean isSubField) {
+        // —— 1. name ——
+        if (!node.has("name") || node.get("name").asText().isBlank()) {
+            throw new BaseException(FormErrorCode.FIELD_ATTR_MISSING, "字段缺少 name");
+        }
         String name = node.get("name").asText();
-        String type = node.get("type").asText();
-        FieldType fieldType = FieldType.valueOf(type);
 
+        // —— 2. type ——
+        if (!node.has("type") || node.get("type").asText().isBlank()) {
+            throw new BaseException(FormErrorCode.FIELD_TYPE_UNKNOWN, "字段 '" + name + "' 缺少 type");
+        }
+        String typeStr = node.get("type").asText();
+        FieldType fieldType;
+        try {
+            fieldType = FieldType.valueOf(typeStr);
+        } catch (IllegalArgumentException e) {
+            throw new BaseException(FormErrorCode.FIELD_TYPE_UNKNOWN,
+                    "字段 '" + name + "' 的类型 '" + typeStr + "' 不在 FieldType 枚举中");
+        }
+
+        // —— 3. enabled 检查 ——
+        if (!fieldType.isEnabled()) {
+            throw new BaseException(FormErrorCode.FIELD_TYPE_DISABLED,
+                    "字段 '" + name + "' 的类型 '" + typeStr + "' (disabled)，v1 不支持发布");
+        }
+
+        // —— 4. 列名 + 白名单校验 (跳过 TABLE) ——
+        if (fieldType != FieldType.TABLE) {
+            String physicalName = ColumnValidation.physicalColumnName(name, fieldType);
+            try {
+                ColumnValidation.validateColumnName(physicalName);
+            } catch (IllegalArgumentException e) {
+                throw new BaseException(FormErrorCode.INVALID_COLUMN_NAME,
+                        "字段名 '" + physicalName + "' 不合法: " + e.getMessage());
+            }
+        }
+
+        // —— 5. 类型特定约束 ——
         return switch (fieldType) {
             case TEXT -> FieldSpec.text(name);
             case RICH_TEXT -> FieldSpec.richText(name);
@@ -346,23 +426,58 @@ public class FormDefServiceImpl implements FormDefService {
             case DATE -> FieldSpec.date(name);
             case BOOL -> FieldSpec.bool(name);
             case DICT -> {
-                String dictType = node.get("dictType").asText();
-                yield FieldSpec.dict(name, dictType);
+                if (!node.has("dictType") || node.get("dictType").asText().isBlank()) {
+                    throw new BaseException(FormErrorCode.FIELD_ATTR_MISSING,
+                            "DICT 字段 '" + name + "' 必须带 dictType");
+                }
+                yield FieldSpec.dict(name, node.get("dictType").asText());
             }
             case REFERENCE -> {
-                String targetFormId = node.get("targetFormId").asText();
-                yield FieldSpec.ref(name, targetFormId);
+                if (!node.has("targetFormId") || node.get("targetFormId").asText().isBlank()) {
+                    throw new BaseException(FormErrorCode.FIELD_ATTR_MISSING,
+                            "REFERENCE 字段 '" + name + "' 必须带 targetFormId");
+                }
+                yield FieldSpec.ref(name, node.get("targetFormId").asText());
             }
             case TABLE -> {
-                JsonNode subArray = node.get("subFields");
+                // —— 递归禁止（C: TABLE 套 TABLE 硬拦截） ——
+                if (isSubField) {
+                    throw new BaseException(FormErrorCode.FIELD_NESTED_TABLE,
+                            "TABLE 字段 '" + name + "' 不能嵌套在另一个 TABLE 的 subFields 中（禁止递归）");
+                }
+                if (!node.has("subFields") || !node.get("subFields").isArray()
+                        || node.get("subFields").isEmpty()) {
+                    throw new BaseException(FormErrorCode.FIELD_ATTR_MISSING,
+                            "TABLE 字段 '" + name + "' 必须带 subFields 且非空");
+                }
                 List<FieldSpec> subFields = new ArrayList<>();
-                if (subArray != null && subArray.isArray()) {
-                    for (JsonNode sub : subArray) {
-                        subFields.add(parseFieldNode(sub));
-                    }
+                for (JsonNode subNode : node.get("subFields")) {
+                    // 子字段必过全部校验 isSubField=true
+                    subFields.add(parseFieldNodeFromDefinition(subNode, true));
                 }
                 yield FieldSpec.table(name, subFields);
             }
+            // disabled 占位成员 — 已在 enabled 检查中拦截，不会到达此处
+            case MULTISELECT, ATTACHMENT, IMAGE, LABEL, EMAIL, PHONE, URL, RATE, SLIDER ->
+                    throw new BaseException(FormErrorCode.FIELD_TYPE_DISABLED,
+                            "FieldType " + fieldType + " is not enabled (disabled placeholder)");
         };
+    }
+
+    /**
+     * 构建子表的 definition JSON（从父表单 fields 中提取指定 TABLE 字段的 subFields）。
+     */
+    private String buildSubTableDefinition(List<FieldSpec> masterFields, String tableFieldName) {
+        for (FieldSpec f : masterFields) {
+            if (f.getFieldType() == FieldType.TABLE && f.getFieldName().equals(tableFieldName)) {
+                try {
+                    return objectMapper.writeValueAsString(f.getSubFields());
+                } catch (JsonProcessingException e) {
+                    log.warn("Failed to serialize sub-table definition for '{}': {}", tableFieldName, e.getMessage());
+                    return "[]";
+                }
+            }
+        }
+        return "[]";
     }
 }

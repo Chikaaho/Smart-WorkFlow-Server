@@ -39,6 +39,10 @@ public enum VendorDialect {
                 case DICT -> "VARCHAR(100)";
                 case REFERENCE -> "VARCHAR(36)";
                 case TABLE -> throw new IllegalArgumentException("TABLE is not a column type");
+                // disabled 占位成员 — 无列映射
+                case MULTISELECT, ATTACHMENT, IMAGE, LABEL, EMAIL, PHONE, URL, RATE, SLIDER ->
+                        throw new IllegalArgumentException(
+                                "FieldType " + fieldType + " is not enabled (disabled placeholder)");
             };
         }
 
@@ -62,6 +66,10 @@ public enum VendorDialect {
                 case DICT -> "VARCHAR(100)";
                 case REFERENCE -> "VARCHAR(36)";
                 case TABLE -> throw new IllegalArgumentException("TABLE is not a column type");
+                // disabled 占位成员 — 无列映射
+                case MULTISELECT, ATTACHMENT, IMAGE, LABEL, EMAIL, PHONE, URL, RATE, SLIDER ->
+                        throw new IllegalArgumentException(
+                                "FieldType " + fieldType + " is not enabled (disabled placeholder)");
             };
         }
 
