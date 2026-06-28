@@ -1,2 +1,3 @@
 com.sw.ck.common.config.mybatis.MybatisPlusConfig
 com.sw.ck.common.config.redis.RedisConfig
+com.sw.ck.common.config.jackson.JacksonLongToStringConfig
