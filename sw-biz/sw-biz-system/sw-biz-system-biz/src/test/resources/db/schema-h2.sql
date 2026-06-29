@@ -17,7 +17,8 @@ create table sys_dict_type (
     status          smallint        not null default 0,
     description     clob
 );
-create unique index uk_sys_dict_type_code on sys_dict_type (code);
+-- V13: 复合唯一 (code, deleted)，支持软删后以相同 code 重建
+create unique index uk_sys_dict_type_code on sys_dict_type (code, deleted);
 
 create table sys_dict_data (
     id              bigint          not null primary key,

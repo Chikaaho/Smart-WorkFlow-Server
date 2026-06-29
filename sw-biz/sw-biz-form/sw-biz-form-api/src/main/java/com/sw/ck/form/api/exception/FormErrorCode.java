@@ -37,7 +37,18 @@ public enum FormErrorCode implements ErrorCode {
     SUBMIT_FIELD_TYPE_MISMATCH(1402, "字段类型不匹配"),
     SUBMIT_DICT_INVALID(1403, "字典值不在允许范围内"),
     SUBMIT_FAILED(1499, "表单提交失败"),
-    SUBMIT_DEFINITION_INVALID(1404, "表单定义配置异常");
+    SUBMIT_DEFINITION_INVALID(1404, "表单定义配置异常"),
+
+    // ==================== 数据查询（1500-1599） ====================
+    QUERY_FORM_NOT_EXIST(1500, "表单不存在或未发布"),
+    QUERY_FILTER_FIELD_UNKNOWN(1501, "过滤字段不在表单定义中"),
+    QUERY_FILTER_FIELD_NOT_FILTERABLE(1502, "该字段类型不支持筛选"),
+    QUERY_FILTER_OP_TYPE_MISMATCH(1503, "过滤操作符与字段类型不匹配"),
+    QUERY_FILTER_OP_NOT_SUPPORTED(1504, "该过滤操作符 v1 暂不支持"),
+
+    // ==================== 数据删除（1505-1509） ====================
+    DELETE_RESTRICT_REFERENCED(1505, "记录被其他表单引用，不能删除"),
+    DELETE_RECORD_NOT_EXIST(1506, "记录不存在或已删除");
 
     private final int code;
     private final String message;
