@@ -48,7 +48,11 @@ public enum FormErrorCode implements ErrorCode {
 
     // ==================== 数据删除（1505-1509） ====================
     DELETE_RESTRICT_REFERENCED(1505, "记录被其他表单引用，不能删除"),
-    DELETE_RECORD_NOT_EXIST(1506, "记录不存在或已删除");
+    DELETE_RECORD_NOT_EXIST(1506, "记录不存在或已删除"),
+
+    // ==================== 数据更新 / 详情（1507-1509） ====================
+    RECORD_NOT_FOUND(1507, "记录不存在或已删除"),
+    VERSION_CONFLICT(1508, "数据版本冲突，请刷新后重试");
 
     private final int code;
     private final String message;

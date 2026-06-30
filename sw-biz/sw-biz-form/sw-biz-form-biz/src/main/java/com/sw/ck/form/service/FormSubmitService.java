@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.common.crypto.AesGcmCipher;
 import com.sw.ck.common.event.DomainEventPublisher;
@@ -56,7 +55,6 @@ public class FormSubmitService {
     private static final Logger log = LoggerFactory.getLogger(FormSubmitService.class);
 
     private final FormDefMapper formDefMapper;
-    private final FormConfigMapper formConfigMapper;
     private final FormTraceMapper formTraceMapper;
     private final DynamicTableManager dynamicTableManager;
     private final FormIdGenerator idGenerator;
@@ -65,9 +63,9 @@ public class FormSubmitService {
     private final DictFacade dictFacade;
     private final DomainEventPublisher eventPublisher;
     private final AesGcmCipher aesCipher;
+    private final FormFieldValidator formFieldValidator;
 
     public FormSubmitService(FormDefMapper formDefMapper,
-                             FormConfigMapper formConfigMapper,
                              FormTraceMapper formTraceMapper,
                              DynamicTableManager dynamicTableManager,
                              FormIdGenerator idGenerator,
@@ -75,9 +73,9 @@ public class FormSubmitService {
                              JdbcTemplate jdbcTemplate,
                              DictFacade dictFacade,
                              DomainEventPublisher eventPublisher,
-                             Optional<AesGcmCipher> aesCipher) {
+                             Optional<AesGcmCipher> aesCipher,
+                             FormFieldValidator formFieldValidator) {
         this.formDefMapper = formDefMapper;
-        this.formConfigMapper = formConfigMapper;
         this.formTraceMapper = formTraceMapper;
         this.dynamicTableManager = dynamicTableManager;
         this.idGenerator = idGenerator;
@@ -86,6 +84,7 @@ public class FormSubmitService {
         this.dictFacade = dictFacade;
         this.eventPublisher = eventPublisher;
         this.aesCipher = aesCipher.orElse(null);
+        this.formFieldValidator = formFieldValidator;
     }
 
     // ==================== 主入口 ====================
@@ -142,12 +141,12 @@ public class FormSubmitService {
         // ==========================================================
         // Step 3: 加载表单配置并解析字段定义
         // ==========================================================
-        Map<String, FieldDef> fieldDefs = loadAndParseFieldDefs(formDef.getId(), submittedData);
+        Map<String, FormFieldValidator.FieldDef> fieldDefs = formFieldValidator.loadAndParseFieldDefs(formDef.getId(), submittedData);
 
         // ==========================================================
         // Step 4: 校验字段（全部校验通过才落库）
         // ==========================================================
-        validateFields(fieldDefs, submittedData);
+        formFieldValidator.validateFields(fieldDefs, submittedData, dictFacade);
 
         // ==========================================================
         // Step 5: 构建系统列 + 用户列值
@@ -161,21 +160,21 @@ public class FormSubmitService {
         List<Object> userValues = new ArrayList<>();
         List<String> tableFieldNames = new ArrayList<>(); // TABLE 字段名列表（需单独处理）
 
-        for (Map.Entry<String, FieldDef> entry : fieldDefs.entrySet()) {
+        for (Map.Entry<String, FormFieldValidator.FieldDef> entry : fieldDefs.entrySet()) {
             String fieldName = entry.getKey();
-            FieldDef def = entry.getValue();
+            FormFieldValidator.FieldDef def = entry.getValue();
 
-            if ("TABLE".equals(def.type)) {
+            if ("TABLE".equals(def.type())) {
                 tableFieldNames.add(fieldName);
                 continue; // TABLE 不在主表加列
             }
 
-            String colName = ColumnValidation.physicalColumnName(fieldName, FieldType.valueOf(def.type));
+            String colName = ColumnValidation.physicalColumnName(fieldName, FieldType.valueOf(def.type()));
             Object value = submittedData.get(fieldName);
 
             // BOOL 类型转换：true/false → 1/0
-            if ("BOOL".equals(def.type)) {
-                value = convertBoolValue(value);
+            if ("BOOL".equals(def.type())) {
+                value = FormFieldValidator.convertBoolValue(value);
             }
 
             userColumns.add(colName);
@@ -225,11 +224,11 @@ public class FormSubmitService {
             }
 
             // 获取子表字段定义
-            FieldDef tableFieldDef = fieldDefs.get(tableFieldName);
+            FormFieldValidator.FieldDef tableFieldDef = fieldDefs.get(tableFieldName);
             List<String> subUserColumns = new ArrayList<>();
-            if (tableFieldDef != null && tableFieldDef.subFields != null) {
-                for (FieldDef subDef : tableFieldDef.subFields) {
-                    subUserColumns.add(ColumnValidation.physicalColumnName(subDef.name, FieldType.valueOf(subDef.type)));
+            if (tableFieldDef != null && tableFieldDef.subFields() != null) {
+                for (FormFieldValidator.FieldDef subDef : tableFieldDef.subFields()) {
+                    subUserColumns.add(ColumnValidation.physicalColumnName(subDef.name(), FieldType.valueOf(subDef.type())));
                 }
             }
 
@@ -244,11 +243,11 @@ public class FormSubmitService {
                 for (int i = 0; i < subUserColumns.size(); i++) {
                     subCols.add(subUserColumns.get(i));
                     // BOOL 类型转换
-                    String subFieldName = tableFieldDef.subFields.get(i).name;
-                    String subFieldType = tableFieldDef.subFields.get(i).type;
+                    String subFieldName = tableFieldDef.subFields().get(i).name();
+                    String subFieldType = tableFieldDef.subFields().get(i).type();
                     Object val = row.get(subFieldName);
                     if ("BOOL".equals(subFieldType)) {
-                        val = convertBoolValue(val);
+                        val = FormFieldValidator.convertBoolValue(val);
                     }
                     subVals.add(val);
                 }
@@ -295,163 +294,6 @@ public class FormSubmitService {
 
     // ==================== 校验 ====================
 
-    /**
-     * 解析 form definition JSON，提取字段定义并同步校验未知字段。
-     *
-     * @param formId        表单 ID
-     * @param submittedData 提交数据（用于检测未定义字段）
-     * @return 字段名 → FieldDef 映射
-     */
-    private Map<String, FieldDef> loadAndParseFieldDefs(String formId, Map<String, Object> submittedData) {
-        // 从 sw_form_config 加载主表 definition JSON（form_id 对应多行时，取 parent_table IS NULL 的主表行）
-        LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId)
-                .isNull(FormConfigEntity::getParentTable);
-        FormConfigEntity config = formConfigMapper.selectOne(configQuery);
-        String definitionJson = (config != null) ? config.getDefinition() : null;
-
-        if (definitionJson == null || definitionJson.isBlank() || "{}".equals(definitionJson)) {
-            log.warn("Form config definition is empty for formId={}, skip field validation", formId);
-            return new HashMap<>();
-        }
-
-        try {
-            JsonNode root = objectMapper.readTree(definitionJson);
-            JsonNode fieldsArray = root.get("fields");
-            if (fieldsArray == null || !fieldsArray.isArray() || fieldsArray.isEmpty()) {
-                log.warn("Form definition has no 'fields' array for formId={}, skip field validation", formId);
-                return new HashMap<>();
-            }
-
-            Map<String, FieldDef> fieldDefs = new LinkedHashMap<>();
-            for (JsonNode fieldNode : fieldsArray) {
-                JsonNode nameNode = fieldNode.get("name");
-                if (nameNode == null || nameNode.asText().isBlank()) continue;
-
-                String name = nameNode.asText();
-                String type = fieldNode.has("type") ? fieldNode.get("type").asText() : "TEXT";
-                boolean required = fieldNode.has("required") && fieldNode.get("required").asBoolean();
-                String dictType = fieldNode.has("dictType") ? fieldNode.get("dictType").asText() : null;
-
-                // 解析 TABLE 子字段
-                List<FieldDef> subFields = null;
-                if ("TABLE".equals(type) && fieldNode.has("subFields")) {
-                    JsonNode subArray = fieldNode.get("subFields");
-                    if (subArray.isArray()) {
-                        subFields = new ArrayList<>();
-                        for (JsonNode sub : subArray) {
-                            String subName = sub.has("name") ? sub.get("name").asText() : null;
-                            if (subName == null) continue;
-                            String subType = sub.has("type") ? sub.get("type").asText() : "TEXT";
-                            subFields.add(new FieldDef(subName, subType, false, null, null));
-                        }
-                    }
-                }
-
-                fieldDefs.put(name, new FieldDef(name, type, required, dictType, subFields));
-            }
-
-            // 检查未知字段
-            for (String submittedField : submittedData.keySet()) {
-                if (!fieldDefs.containsKey(submittedField)) {
-                    throw new BaseException(FormErrorCode.SUBMIT_FIELD_UNKNOWN,
-                            "提交了未定义的字段: '" + submittedField + "'");
-                }
-            }
-
-            return fieldDefs;
-
-        } catch (JsonProcessingException e) {
-            log.error("Failed to parse form definition JSON for formId={}", formId, e);
-            throw new BaseException(FormErrorCode.SUBMIT_DEFINITION_INVALID, "表单定义配置解析失败");
-        }
-    }
-
-    /**
-     * 校验字段值（必填、类型、字典值域）。
-     * <p>
-     * 全部校验通过才返回；任一失败抛 {@link BaseException}。
-     * </p>
-     */
-    private void validateFields(Map<String, FieldDef> fieldDefs, Map<String, Object> submittedData) {
-        if (fieldDefs.isEmpty()) {
-            return; // 无定义时不校验
-        }
-
-        for (FieldDef def : fieldDefs.values()) {
-            Object value = submittedData.get(def.name);
-
-            // —— 必填校验 ——
-            if (def.required) {
-                boolean isEmpty = value == null
-                        || (value instanceof String s && s.isBlank());
-                if ("TABLE".equals(def.type)) {
-                    // TABLE 类型检查是否为空列表
-                    isEmpty = value == null
-                            || (value instanceof List<?> list && list.isEmpty());
-                }
-                if (isEmpty) {
-                    throw new BaseException(FormErrorCode.SUBMIT_FIELD_REQUIRED,
-                            "必填字段 '" + def.name + "' 缺失");
-                }
-            }
-
-            // 空值免后续校验
-            if (value == null || (value instanceof String s && s.isBlank())) {
-                continue;
-            }
-
-            // —— 类型校验 ——
-            switch (def.type) {
-                case "NUMBER" -> {
-                    if (!(value instanceof Number)) {
-                        // 尝试从字符串解析
-                        if (value instanceof String s) {
-                            try {
-                                new java.math.BigDecimal(s);
-                            } catch (NumberFormatException e) {
-                                throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
-                                        "字段 '" + def.name + "' 需要数字类型，实际值: '" + s + "'");
-                            }
-                        } else {
-                            throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
-                                    "字段 '" + def.name + "' 需要数字类型");
-                        }
-                    }
-                }
-                case "DATE" -> {
-                    // 接受字符串或 Long(时间戳)
-                    if (!(value instanceof String) && !(value instanceof Number)) {
-                        throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
-                                "字段 '" + def.name + "' 需要日期类型");
-                    }
-                }
-                case "BOOL" -> {
-                    // 最终会转 0/1，能转即可
-                    Object converted = convertBoolValue(value);
-                    if (converted == null) {
-                        throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
-                                "字段 '" + def.name + "' 需要布尔类型");
-                    }
-                }
-                case "DICT" -> {
-                    String dictType = def.dictType;
-                    if (dictType == null || dictType.isBlank()) {
-                        log.warn("DICT field '{}' has no dictType, skip dict validation", def.name);
-                    } else {
-                        String code = String.valueOf(value);
-                        boolean valid = dictFacade.isValidCode(dictType, code);
-                        if (!valid) {
-                            throw new BaseException(FormErrorCode.SUBMIT_DICT_INVALID,
-                                    "字典字段 '" + def.name + "' 的值 '" + code + "' 不在字典类型 '" + dictType + "' 的值域内");
-                        }
-                    }
-                }
-                // TEXT / RICH_TEXT / REFERENCE 无额外校验
-            }
-        }
-    }
-
     // ==================== 系统列填充 ====================
 
     /**
@@ -494,25 +336,6 @@ public class FormSubmitService {
     // convertToColumnName() 已删除，改为调用 ColumnValidation.physicalColumnName() 单一出口
 
     /**
-     * BOOL 值转换：true/false/"true"/"false"/1/0 → 1/0（SMALLINT）。
-     *
-     * @return Integer 1 或 0；无法转换返回 null
-     */
-    private Integer convertBoolValue(Object value) {
-        if (value == null) return 0;
-        if (value instanceof Boolean b) return b ? 1 : 0;
-        if (value instanceof Number n) return n.intValue() != 0 ? 1 : 0;
-        if (value instanceof String s) {
-            return switch (s.trim().toLowerCase()) {
-                case "true", "1", "yes", "on" -> 1;
-                case "false", "0", "no", "off", "" -> 0;
-                default -> null; // 无法识别
-            };
-        }
-        return null;
-    }
-
-    /**
      * 解析子表映射 JSON。
      *
      * @param subTableMappingJson FormDefEntity.subTableMapping 的 JSON 字串
@@ -548,16 +371,4 @@ public class FormSubmitService {
         }
     }
 
-    // ==================== 内部类型 ====================
-
-    /**
-     * 表单字段定义（从 definition JSON 解析）。
-     */
-    private record FieldDef(
-            String name,
-            String type,
-            boolean required,
-            String dictType,
-            List<FieldDef> subFields
-    ) {}
 }

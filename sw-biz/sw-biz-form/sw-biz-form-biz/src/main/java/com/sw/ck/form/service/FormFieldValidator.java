@@ -1,0 +1,247 @@
+package com.sw.ck.form.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.form.api.exception.FormErrorCode;
+import com.sw.ck.form.dynamic.FieldType;
+import com.sw.ck.form.entity.FormConfigEntity;
+import com.sw.ck.form.mapper.FormConfigMapper;
+import com.sw.ck.system.api.dict.DictFacade;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+
+/**
+ * 表单字段校验共享工具。
+ * <p>
+ * 从 {@link FormSubmitService} 抽取，供提交、更新等数据写入路径复用同一套校验口径。
+ * 校验逻辑统一收敛于此，避免多套口径导致的行为漂移。
+ * </p>
+ *
+ * <h3>校验覆盖</h3>
+ * <ul>
+ *   <li>必填（1401）</li>
+ *   <li>类型（NUMBER / DATE / BOOL，1402）</li>
+ *   <li>字典值域（1403）</li>
+ *   <li>未知字段（1400）</li>
+ * </ul>
+ */
+@Component
+public class FormFieldValidator {
+
+    private static final Logger log = LoggerFactory.getLogger(FormFieldValidator.class);
+
+    private final FormConfigMapper formConfigMapper;
+    private final ObjectMapper objectMapper;
+
+    public FormFieldValidator(FormConfigMapper formConfigMapper,
+                              ObjectMapper objectMapper) {
+        this.formConfigMapper = formConfigMapper;
+        this.objectMapper = objectMapper;
+    }
+
+    // ==================== 字段定义加载 ====================
+
+    /**
+     * 从 sw_form_config.definition JSON 加载字段定义，并同步校验未知字段。
+     *
+     * @param formId        表单 ID
+     * @param submittedData 提交/更新数据（用于检测未定义字段）
+     * @return 字段名 → FieldDef 映射（保持 definition 中的顺序）
+     */
+    public Map<String, FieldDef> loadAndParseFieldDefs(String formId, Map<String, Object> submittedData) {
+        // 从 sw_form_config 加载主表 definition JSON（parent_table IS NULL）
+        List<FormConfigEntity> configs = formConfigMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<FormConfigEntity>()
+                        .eq(FormConfigEntity::getFormId, formId)
+                        .isNull(FormConfigEntity::getParentTable)
+        );
+        FormConfigEntity config = (configs != null && !configs.isEmpty()) ? configs.get(0) : null;
+        String definitionJson = (config != null) ? config.getDefinition() : null;
+
+        if (definitionJson == null || definitionJson.isBlank() || "{}".equals(definitionJson)) {
+            log.warn("Form config definition is empty for formId={}, skip field validation", formId);
+            return new LinkedHashMap<>();
+        }
+
+        try {
+            JsonNode root = objectMapper.readTree(definitionJson);
+            JsonNode fieldsArray = root.get("fields");
+            if (fieldsArray == null || !fieldsArray.isArray() || fieldsArray.isEmpty()) {
+                log.warn("Form definition has no 'fields' array for formId={}, skip field validation", formId);
+                return new LinkedHashMap<>();
+            }
+
+            Map<String, FieldDef> fieldDefs = new LinkedHashMap<>();
+            for (JsonNode fieldNode : fieldsArray) {
+                JsonNode nameNode = fieldNode.get("name");
+                if (nameNode == null || nameNode.asText().isBlank()) continue;
+
+                String name = nameNode.asText();
+                String type = fieldNode.has("type") ? fieldNode.get("type").asText() : "TEXT";
+                boolean required = fieldNode.has("required") && fieldNode.get("required").asBoolean();
+                String dictType = fieldNode.has("dictType") ? fieldNode.get("dictType").asText() : null;
+
+                // 解析 TABLE 子字段
+                List<FieldDef> subFields = null;
+                if ("TABLE".equals(type) && fieldNode.has("subFields")) {
+                    JsonNode subArray = fieldNode.get("subFields");
+                    if (subArray.isArray()) {
+                        subFields = new ArrayList<>();
+                        for (JsonNode sub : subArray) {
+                            String subName = sub.has("name") ? sub.get("name").asText() : null;
+                            if (subName == null) continue;
+                            String subType = sub.has("type") ? sub.get("type").asText() : "TEXT";
+                            subFields.add(new FieldDef(subName, subType, false, null, null));
+                        }
+                    }
+                }
+
+                fieldDefs.put(name, new FieldDef(name, type, required, dictType, subFields));
+            }
+
+            // 检查未知字段
+            for (String submittedField : submittedData.keySet()) {
+                if (!fieldDefs.containsKey(submittedField)) {
+                    throw new BaseException(FormErrorCode.SUBMIT_FIELD_UNKNOWN,
+                            "提交了未定义的字段: '" + submittedField + "'");
+                }
+            }
+
+            return fieldDefs;
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse form definition JSON for formId={}", formId, e);
+            throw new BaseException(FormErrorCode.SUBMIT_DEFINITION_INVALID, "表单定义配置解析失败");
+        }
+    }
+
+    // ==================== 字段校验 ====================
+
+    /**
+     * 校验字段值（必填、类型、字典值域）。
+     * <p>
+     * 全部校验通过才返回；任一失败抛 {@link BaseException}。
+     * 与提交路径使用完全相同的校验口径（1400-1404 错误码）。
+     * </p>
+     *
+     * @param fieldDefs     字段定义映射
+     * @param submittedData 待校验数据
+     * @param dictFacade    字典门面（用于字典值域校验）
+     */
+    public void validateFields(Map<String, FieldDef> fieldDefs,
+                               Map<String, Object> submittedData,
+                               DictFacade dictFacade) {
+        if (fieldDefs.isEmpty()) {
+            return; // 无定义时不校验
+        }
+
+        for (FieldDef def : fieldDefs.values()) {
+            Object value = submittedData.get(def.name);
+
+            // —— 必填校验 ——
+            if (def.required) {
+                boolean isEmpty = value == null
+                        || (value instanceof String s && s.isBlank());
+                if ("TABLE".equals(def.type)) {
+                    // TABLE 类型检查是否为空列表
+                    isEmpty = value == null
+                            || (value instanceof List<?> list && list.isEmpty());
+                }
+                if (isEmpty) {
+                    throw new BaseException(FormErrorCode.SUBMIT_FIELD_REQUIRED,
+                            "必填字段 '" + def.name + "' 缺失");
+                }
+            }
+
+            // 空值免后续校验
+            if (value == null || (value instanceof String s && s.isBlank())) {
+                continue;
+            }
+
+            // —— 类型校验 ——
+            switch (def.type) {
+                case "NUMBER" -> {
+                    if (!(value instanceof Number)) {
+                        if (value instanceof String s) {
+                            try {
+                                new java.math.BigDecimal(s);
+                            } catch (NumberFormatException e) {
+                                throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
+                                        "字段 '" + def.name + "' 需要数字类型，实际值: '" + s + "'");
+                            }
+                        } else {
+                            throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
+                                    "字段 '" + def.name + "' 需要数字类型");
+                        }
+                    }
+                }
+                case "DATE" -> {
+                    if (!(value instanceof String) && !(value instanceof Number)) {
+                        throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
+                                "字段 '" + def.name + "' 需要日期类型");
+                    }
+                }
+                case "BOOL" -> {
+                    Object converted = convertBoolValue(value);
+                    if (converted == null) {
+                        throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
+                                "字段 '" + def.name + "' 需要布尔类型");
+                    }
+                }
+                case "DICT" -> {
+                    String dictType = def.dictType;
+                    if (dictType == null || dictType.isBlank()) {
+                        log.warn("DICT field '{}' has no dictType, skip dict validation", def.name);
+                    } else {
+                        String code = String.valueOf(value);
+                        boolean valid = dictFacade.isValidCode(dictType, code);
+                        if (!valid) {
+                            throw new BaseException(FormErrorCode.SUBMIT_DICT_INVALID,
+                                    "字典字段 '" + def.name + "' 的值 '" + code + "' 不在字典类型 '" + dictType + "' 的值域内");
+                        }
+                    }
+                }
+                // TEXT / RICH_TEXT / REFERENCE 无额外校验
+            }
+        }
+    }
+
+    // ==================== BOOL 转换 ====================
+
+    /**
+     * BOOL 值转换：true/false/"true"/"false"/1/0 → 1/0（SMALLINT）。
+     *
+     * @return Integer 1 或 0；无法转换返回 null
+     */
+    public static Integer convertBoolValue(Object value) {
+        if (value == null) return 0;
+        if (value instanceof Boolean b) return b ? 1 : 0;
+        if (value instanceof Number n) return n.intValue() != 0 ? 1 : 0;
+        if (value instanceof String s) {
+            return switch (s.trim().toLowerCase()) {
+                case "true", "1", "yes", "on" -> 1;
+                case "false", "0", "no", "off", "" -> 0;
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    // ==================== 内部类型 ====================
+
+    /**
+     * 表单字段定义（从 definition JSON 解析）。
+     */
+    public record FieldDef(
+            String name,
+            String type,
+            boolean required,
+            String dictType,
+            List<FieldDef> subFields
+    ) {}
+}

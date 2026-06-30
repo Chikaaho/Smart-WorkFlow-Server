@@ -6,6 +6,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.form.api.dto.FormDefDTO;
 import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.dynamic.ColumnValidation;
@@ -295,6 +297,28 @@ public class FormDefServiceImpl implements FormDefService {
                 .eq(FormConfigEntity::getFormId, formId);
         FormConfigEntity config = formConfigMapper.selectOne(configQuery);
         return config != null ? config.getDefinition() : null;
+    }
+
+    @Override
+    public PageResult<FormDefDTO> pageFormDefs(PageParam pageParam, String keyword) {
+        // 构造查询条件：按 update_time 倒序 + 可选 name 模糊搜索
+        LambdaQueryWrapper<FormDefEntity> wrapper = Wrappers.lambdaQuery(FormDefEntity.class)
+                .orderByDesc(FormDefEntity::getUpdateTime);
+        if (keyword != null && !keyword.isBlank()) {
+            wrapper.like(FormDefEntity::getName, keyword.trim());
+        }
+        // 走 MyBatis-Plus selectPage → @TableLogic / TenantLineHandler 自动生效
+        PageResult<FormDefEntity> entityPage = formDefMapper.selectPage(pageParam, wrapper);
+        // 转换 Entity → DTO
+        List<FormDefDTO> dtoList = entityPage.getRecords().stream()
+                .map(this::toDTO)
+                .toList();
+        PageResult<FormDefDTO> result = new PageResult<>();
+        result.setRecords(dtoList);
+        result.setTotal(entityPage.getTotal());
+        result.setPageNum(entityPage.getPageNum());
+        result.setPageSize(entityPage.getPageSize());
+        return result;
     }
 
     @Override

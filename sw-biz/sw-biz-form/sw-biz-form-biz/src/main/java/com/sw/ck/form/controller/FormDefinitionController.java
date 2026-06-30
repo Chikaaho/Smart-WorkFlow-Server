@@ -1,6 +1,8 @@
 package com.sw.ck.form.controller;
 
 import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
 import com.sw.ck.form.api.dto.FormConfigSaveReq;
 import com.sw.ck.form.api.dto.FormCreateReq;
@@ -63,6 +65,27 @@ public class FormDefinitionController {
         log.info("Saving form config: id={}", id);
         formDefService.saveConfig(id, req.getDefinition());
         return R.ok();
+    }
+
+    // ==================== 分页查询 ====================
+
+    /**
+     * 分页查询表单定义列表。
+     * <p>
+     * 只返元数据（id/formKey/name/status/时间），不返 definition JSON，
+     * 避免列表体积过大。按 update_time 倒序排列（最近编辑的在前）。
+     * 多租户/逻辑删除走 MyBatis-Plus 拦截器自动过滤。
+     * </p>
+     *
+     * @param pageParam 分页参数（pageNum/pageSize）
+     * @param keyword   可选，对 name 模糊搜索（LIKE），为空不加该条件
+     * @return 分页结果，每行为 FormDefDTO
+     */
+    @GetMapping("/page")
+    public R<PageResult<FormDefDTO>> pageFormDefs(PageParam pageParam,
+                                                  @RequestParam(required = false) String keyword) {
+        PageResult<FormDefDTO> result = formDefService.pageFormDefs(pageParam, keyword);
+        return R.ok(result);
     }
 
     // ==================== 发布 ====================

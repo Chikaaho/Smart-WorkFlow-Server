@@ -1,5 +1,7 @@
 package com.sw.ck.form.service;
 
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.form.api.dto.FormDefDTO;
 import com.sw.ck.form.entity.FormDefEntity;
 
@@ -87,6 +89,20 @@ public interface FormDefService {
      * @return definition JSON
      */
     String getDefinitionById(String formId);
+
+    /**
+     * 分页查询表单定义列表。
+     * <p>
+     * 只返元数据（id/formKey/name/status/时间等），不返 definition JSON，
+     * 避免列表体积过大。按 update_time 倒序排列。
+     * 多租户/逻辑删除走 MyBatis-Plus 拦截器自动过滤，不手写条件。
+     * </p>
+     *
+     * @param pageParam 分页参数（pageNum/pageSize）
+     * @param keyword   可选，对 name 模糊搜索（LIKE），为空不加该条件
+     * @return 分页结果，每行 FormDefDTO（含 id/formKey/name/status/createTime/updateTime 等）
+     */
+    PageResult<FormDefDTO> pageFormDefs(PageParam pageParam, String keyword);
 
     /**
      * 根据 ID 获取表单定义实体。

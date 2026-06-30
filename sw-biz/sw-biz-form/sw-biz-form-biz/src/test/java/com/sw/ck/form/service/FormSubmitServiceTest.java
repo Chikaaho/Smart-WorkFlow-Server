@@ -20,6 +20,7 @@ import com.sw.ck.form.mapper.FormConfigMapper;
 import com.sw.ck.form.mapper.FormDefMapper;
 import com.sw.ck.form.mapper.FormSnapshotMapper;
 import com.sw.ck.form.mapper.FormTraceMapper;
+import com.sw.ck.form.service.FormFieldValidator;
 import com.sw.ck.form.service.impl.FormDefServiceImpl;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
@@ -660,17 +661,23 @@ class FormSubmitServiceTest {
         }
 
         @Bean
+        public FormFieldValidator formFieldValidator(FormConfigMapper formConfigMapper,
+                                                      ObjectMapper objectMapper) {
+            return new FormFieldValidator(formConfigMapper, objectMapper);
+        }
+
+        @Bean
         public FormSubmitService formSubmitService(FormDefMapper formDefMapper,
-                                                    FormConfigMapper formConfigMapper,
                                                     FormTraceMapper formTraceMapper,
                                                     DynamicTableManager dynamicTableManager,
                                                     ObjectMapper objectMapper,
                                                     JdbcTemplate jdbcTemplate,
                                                     DictFacade dictFacade,
-                                                    DomainEventPublisher eventPublisher) {
-            return new FormSubmitService(formDefMapper, formConfigMapper, formTraceMapper,
+                                                    DomainEventPublisher eventPublisher,
+                                                    FormFieldValidator formFieldValidator) {
+            return new FormSubmitService(formDefMapper, formTraceMapper,
                     dynamicTableManager, new FormIdGenerator(), objectMapper, jdbcTemplate,
-                    dictFacade, eventPublisher, Optional.empty());
+                    dictFacade, eventPublisher, Optional.empty(), formFieldValidator);
         }
 
         @Bean

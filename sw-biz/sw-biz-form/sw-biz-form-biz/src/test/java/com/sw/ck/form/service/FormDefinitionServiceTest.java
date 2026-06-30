@@ -6,9 +6,12 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.form.api.dto.FormDefDTO;
 import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.dynamic.DynamicTableManager;
@@ -36,6 +39,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -337,7 +341,8 @@ class FormDefinitionServiceTest {
     @Test
     @DisplayName("重复 formKey 创建草稿 → 报错")
     void createDraft_duplicateFormKey_shouldReject() {
-        formDefService.createDraft("duplicate_key", "原始表单", null, null);
+        FormDefDTO dto = formDefService.createDraft("duplicate_key", "原始表单", null, null);
+        createdFormIds.add(dto.getId());
         assertThatThrownBy(() -> formDefService.createDraft("duplicate_key", "重复表单", null, null))
                 .isInstanceOf(BaseException.class)
                 .satisfies(e -> {
@@ -454,6 +459,81 @@ class FormDefinitionServiceTest {
                     BaseException be = (BaseException) e;
                     assertThat(be.getCode()).isEqualTo(FormErrorCode.FIELD_ATTR_MISSING.getCode());
                 });
+    }
+
+    // ==================== 测试 13：分页查询表单定义列表 ====================
+
+    @Test
+    @DisplayName("分页查询 → 正确分页 + 排序 + keyword 过滤 + 只返元数据")
+    void pageFormDefs_shouldReturnPaginatedMetadataOnly() {
+        // —— Arrange：创建 5 个草稿，名称各异 ——
+        for (int i = 1; i <= 5; i++) {
+            FormDefDTO dto = formDefService.createDraft("page_test_" + i,
+                    (i <= 2) ? "keyword_match_" + i : "other_form_" + i,
+                    null, null);
+            createdFormIds.add(dto.getId());
+            // 制造 update_time 差异：交错睡几毫秒确保排序可验证
+            sleepUninterruptedly(5);
+        }
+
+        // —— Test 1: 第一页 size=2 ——
+        PageParam pageParam = new PageParam();
+        pageParam.setPageNum(1);
+        pageParam.setPageSize(2);
+        PageResult<FormDefDTO> page1 = formDefService.pageFormDefs(pageParam, null);
+
+        assertThat(page1.getTotal()).as("总记录数应为 5").isEqualTo(5);
+        assertThat(page1.getRecords()).hasSize(2);
+        assertThat(page1.getPageNum()).isEqualTo(1);
+        assertThat(page1.getPageSize()).isEqualTo(2);
+        // 验证排序：第 1 页第 1 条应是最后创建的 "other_form_5"（按 update_time 倒序）
+        assertThat(page1.getRecords().get(0).getName()).isEqualTo("other_form_5");
+        assertThat(page1.getRecords().get(1).getName()).isEqualTo("other_form_4");
+
+        // —— Test 2: 第二页 ——
+        pageParam.setPageNum(2);
+        PageResult<FormDefDTO> page2 = formDefService.pageFormDefs(pageParam, null);
+        assertThat(page2.getRecords()).hasSize(2);
+
+        // —— Test 3: 只返元数据，不返 definition ——
+        FormDefDTO first = page1.getRecords().get(0);
+        assertThat(first.getId()).as("应返 ID").isNotNull();
+        assertThat(first.getFormKey()).as("应返 formKey").isNotNull();
+        assertThat(first.getName()).as("应返 name").isNotNull();
+        assertThat(first.getStatus()).as("应返 status").isNotNull();
+        assertThat(first.getCreateTime()).as("应返 createTime").isNotNull();
+        assertThat(first.getUpdateTime()).as("应返 updateTime").isNotNull();
+
+        // —— Test 4: keyword 过滤 ——
+        PageResult<FormDefDTO> keywordResult = formDefService.pageFormDefs(pageParam, "keyword_match");
+        assertThat(keywordResult.getTotal()).as("keyword 匹配数应为 2").isEqualTo(2);
+        assertThat(keywordResult.getRecords()).allMatch(dto -> dto.getName().startsWith("keyword_match"));
+
+        // —— Test 5: keyword 无匹配 ——
+        PageResult<FormDefDTO> noMatch = formDefService.pageFormDefs(pageParam, "nonexistent");
+        assertThat(noMatch.getTotal()).as("无匹配应返回 0").isEqualTo(0);
+        assertThat(noMatch.getRecords()).isEmpty();
+
+        // —— Test 6: keyword 为空字符串/空白 ——
+        PageResult<FormDefDTO> emptyKeyword = formDefService.pageFormDefs(pageParam, "");
+        assertThat(emptyKeyword.getTotal()).as("空 keyword 应返回全部").isEqualTo(5);
+        PageResult<FormDefDTO> blankKeyword = formDefService.pageFormDefs(pageParam, "   ");
+        assertThat(blankKeyword.getTotal()).as("空白 keyword 应返回全部").isEqualTo(5);
+
+        System.out.println("=== 分页查询验证 ===");
+        System.out.println("page1 total=" + page1.getTotal() + ", records=" + page1.getRecords().size()
+                + ", first=" + page1.getRecords().get(0).getName());
+        System.out.println("page2 total=" + page2.getTotal() + ", records=" + page2.getRecords().size());
+        System.out.println("keyword match total=" + keywordResult.getTotal());
+    }
+
+    /** 毫秒级睡眠，辅助方法不做异常声明 */
+    private static void sleepUninterruptedly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ==================== 测试辅助方法 ====================
@@ -643,6 +723,7 @@ class FormDefinitionServiceTest {
             // MyBatis-Plus 插件
             MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
             interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
+            interceptor.addInnerInterceptor(new PaginationInnerInterceptor());
             factory.setPlugins(interceptor);
 
             return factory.getObject();

@@ -13,7 +13,9 @@ import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.dynamic.ColumnValidation;
 import com.sw.ck.form.dynamic.FieldType;
 import com.sw.ck.form.entity.FormConfigEntity;
+import com.sw.ck.form.entity.FormDefEntity;
 import com.sw.ck.form.mapper.FormConfigMapper;
+import com.sw.ck.form.mapper.FormDefMapper;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
 import org.slf4j.Logger;
@@ -81,6 +83,7 @@ public class FormDataQueryService {
     // ==================== 依赖 ====================
 
     private final FormDefService formDefService;
+    private final FormDefMapper formDefMapper;
     private final FormConfigMapper formConfigMapper;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -89,10 +92,12 @@ public class FormDataQueryService {
     private final Set<String> deletedColumnEnsured = ConcurrentHashMap.newKeySet();
 
     public FormDataQueryService(FormDefService formDefService,
+                                FormDefMapper formDefMapper,
                                 FormConfigMapper formConfigMapper,
                                 JdbcTemplate jdbcTemplate,
                                 ObjectMapper objectMapper) {
         this.formDefService = formDefService;
+        this.formDefMapper = formDefMapper;
         this.formConfigMapper = formConfigMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
@@ -196,6 +201,116 @@ public class FormDataQueryService {
         result.setTotal(total);
         result.setPageNum(page);
         result.setPageSize(size);
+        return result;
+    }
+
+    // ==================== 单条记录详情查询 ====================
+
+    /**
+     * 查询单条记录详情（含子表行，供编辑回显）。
+     * <p>
+     * 返回主记录的 id + 审计列 + 业务列 + version（乐观锁用）+
+     * 各 TABLE 子表的行列表。与列表查询不同，此处包含 version 字段。
+     * </p>
+     *
+     * @param formKey  表单业务标识
+     * @param recordId 主表记录 UUID
+     * @return 主记录字段 + 子表行（key=TABLE字段逻辑名）
+     */
+    public Map<String, Object> getRecordDetail(String formKey, String recordId) {
+        // —— Step 1: 获取当前用户 ——
+        LoginUser loginUser = LoginUserHolder.get();
+        if (loginUser == null) {
+            throw new BaseException(com.sw.ck.common.exception.CommonErrorCode.UNAUTHORIZED, "未登录");
+        }
+        Long tenantId = loginUser.getTenantId();
+
+        // —— Step 2: 解析 formKey → FormDefDTO ——
+        FormDefDTO formDef = formDefService.getFormDefByKey(formKey);
+        if (formDef == null) {
+            throw new BaseException(FormErrorCode.QUERY_FORM_NOT_EXIST, "表单 '" + formKey + "' 不存在");
+        }
+        if (!"PUBLISHED".equals(formDef.getStatus())) {
+            throw new BaseException(FormErrorCode.QUERY_FORM_NOT_EXIST, "表单 '" + formKey + "' 未发布，不能查询");
+        }
+        String tableName = formDef.getPhysicalTableName();
+        if (tableName == null || tableName.isBlank()) {
+            throw new BaseException(FormErrorCode.QUERY_FORM_NOT_EXIST, "表单 '" + formKey + "' 无物理表");
+        }
+        validateTableName(tableName);
+
+        // —— Step 3: 加载字段元数据 ——
+        Map<String, FieldType> fieldTypeMap = loadFieldTypeMap(formDef.getId());
+        Map<String, List<SubFieldMeta>> tableSubFields = loadTableSubFields(formDef.getId());
+
+        // —— Step 4: 构建详情投影（含 version） ——
+        List<String> projectionColumns = buildDetailProjection(fieldTypeMap);
+
+        // —— Step 5: 查询主记录 ——
+        String columns = projectionColumns.stream()
+                .map(c -> "\"" + c + "\"")
+                .collect(Collectors.joining(", "));
+        String sql = "SELECT " + columns + " FROM \"" + tableName
+                + "\" WHERE \"id\" = ? AND \"deleted\" = 0 AND \"tenant_id\" = ?";
+
+        List<Map<String, Object>> records;
+        try {
+            records = jdbcTemplate.queryForList(sql, recordId, tenantId);
+        } catch (Exception e) {
+            log.error("Detail query failed: table={}, recordId={}", tableName, recordId, e);
+            throw new BaseException(FormErrorCode.RECORD_NOT_FOUND, "查询失败: " + e.getMessage());
+        }
+
+        if (records == null || records.isEmpty()) {
+            throw new BaseException(FormErrorCode.RECORD_NOT_FOUND, "记录不存在或已删除");
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>(records.get(0));
+
+        // —— Step 6: 加载子表行 ——
+        FormDefEntity formDefEntity = formDefMapper.selectById(formDef.getId());
+        if (formDefEntity != null) {
+            Map<String, String> subTableMapping = parseSubTableMapping(formDefEntity.getSubTableMapping());
+
+            for (Map.Entry<String, String> entry : subTableMapping.entrySet()) {
+                String tableFieldName = entry.getKey();
+                String subTableName = entry.getValue();
+
+                if (subTableName == null || subTableName.isBlank()) continue;
+                if (!subTableName.matches(TABLE_NAME_PATTERN)) {
+                    log.warn("Invalid sub-table name '{}' in subTableMapping, skip", subTableName);
+                    continue;
+                }
+
+                // 获取子表字段定义
+                List<SubFieldMeta> subFields = tableSubFields.getOrDefault(tableFieldName, List.of());
+
+                // 构建子表投影
+                List<String> subProjection = buildSubTableProjection(subFields);
+
+                // 查询子表行
+                String subColumns = subProjection.stream()
+                        .map(c -> "\"" + c + "\"")
+                        .collect(Collectors.joining(", "));
+                String subSql = "SELECT " + subColumns + " FROM \"" + subTableName
+                        + "\" WHERE \"parent_record_id\" = ? AND \"deleted\" = 0 AND \"tenant_id\" = ?"
+                        + " ORDER BY \"create_time\" ASC";
+
+                List<Map<String, Object>> subRows;
+                try {
+                    subRows = jdbcTemplate.queryForList(subSql, recordId, tenantId);
+                } catch (Exception e) {
+                    log.warn("Sub-table query failed for '{}': {}", subTableName, e.getMessage());
+                    subRows = List.of();
+                }
+
+                result.put(tableFieldName, subRows != null ? subRows : List.of());
+            }
+        }
+
+        log.debug("Record detail: formKey={}, recordId={}, subTables={}",
+                formKey, recordId, result.keySet().stream()
+                        .filter(k -> tableSubFields.containsKey(k)).count());
         return result;
     }
 
@@ -503,10 +618,133 @@ public class FormDataQueryService {
         return Math.min(size, MAX_PAGE_SIZE);
     }
 
+    // ==================== 详情查询辅助 ====================
+
+    /**
+     * 构建详情视图的列投影（含 version，不含 deleted/tenant_id）。
+     */
+    private List<String> buildDetailProjection(Map<String, FieldType> fieldTypeMap) {
+        // 详情投影系统列：id + 审计列 + version（比列表多 version）
+        List<String> columns = new ArrayList<>(List.of(
+                "id", "create_time", "create_by", "update_time", "update_by", "version"
+        ));
+
+        for (Map.Entry<String, FieldType> entry : fieldTypeMap.entrySet()) {
+            FieldType ft = entry.getValue();
+            if (ft == FieldType.TABLE) continue;
+            if (!ft.isEnabled()) continue;
+
+            String physicalCol = ColumnValidation.physicalColumnName(entry.getKey(), ft);
+            columns.add(physicalCol);
+        }
+
+        return columns;
+    }
+
+    /**
+     * 加载 TABLE 字段的子字段元数据（字段名 → 类型）。
+     */
+    private Map<String, List<SubFieldMeta>> loadTableSubFields(String formId) {
+        List<FormConfigEntity> configs = formConfigMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<FormConfigEntity>()
+                        .eq(FormConfigEntity::getFormId, formId)
+                        .isNull(FormConfigEntity::getParentTable)
+        );
+        FormConfigEntity config = (configs != null && !configs.isEmpty()) ? configs.get(0) : null;
+        String definitionJson = (config != null) ? config.getDefinition() : null;
+
+        if (definitionJson == null || definitionJson.isBlank() || "{}".equals(definitionJson)) {
+            return Map.of();
+        }
+
+        Map<String, List<SubFieldMeta>> result = new LinkedHashMap<>();
+
+        try {
+            JsonNode root = objectMapper.readTree(definitionJson);
+            JsonNode fieldsArray = root.get("fields");
+            if (fieldsArray == null || !fieldsArray.isArray()) {
+                return Map.of();
+            }
+
+            for (JsonNode fieldNode : fieldsArray) {
+                String type = fieldNode.has("type") ? fieldNode.get("type").asText() : "TEXT";
+                if (!"TABLE".equals(type)) continue;
+
+                String name = fieldNode.has("name") ? fieldNode.get("name").asText() : null;
+                if (name == null) continue;
+
+                JsonNode subFieldsNode = fieldNode.get("subFields");
+                if (subFieldsNode == null || !subFieldsNode.isArray()) continue;
+
+                List<SubFieldMeta> subFields = new ArrayList<>();
+                for (JsonNode subNode : subFieldsNode) {
+                    String subName = subNode.has("name") ? subNode.get("name").asText() : null;
+                    if (subName == null) continue;
+                    String subType = subNode.has("type") ? subNode.get("type").asText() : "TEXT";
+                    FieldType subFieldType;
+                    try {
+                        subFieldType = FieldType.valueOf(subType);
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    if (!subFieldType.isEnabled() || subFieldType == FieldType.TABLE) continue;
+
+                    String physicalCol = ColumnValidation.physicalColumnName(subName, subFieldType);
+                    subFields.add(new SubFieldMeta(subName, subFieldType, physicalCol));
+                }
+                result.put(name, subFields);
+            }
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to parse sub-field definitions for formId={}: {}", formId, e.getMessage());
+        }
+
+        return result;
+    }
+
+    /**
+     * 构建子表行投影（系统列 + 用户子列）。
+     * <p>
+     * 子表系统列投影：id, parent_record_id, create_time, create_by, update_time, update_by。
+     * 不含 deleted / tenant_id / version（子表暂不与主表共用乐观锁）。
+     * </p>
+     */
+    private List<String> buildSubTableProjection(List<SubFieldMeta> subFields) {
+        List<String> columns = new ArrayList<>(List.of(
+                "id", "parent_record_id", "create_time", "create_by", "update_time", "update_by"
+        ));
+
+        for (SubFieldMeta meta : subFields) {
+            columns.add(meta.physicalCol());
+        }
+
+        return columns;
+    }
+
+    /**
+     * 解析子表映射 JSON。
+     */
+    private Map<String, String> parseSubTableMapping(String subTableMappingJson) {
+        if (subTableMappingJson == null || subTableMappingJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(subTableMappingJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to parse sub-table mapping JSON: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
     // ==================== 内部类型 ====================
 
     /**
      * SQL 过滤子句：SQL 片段 + 参数值。
      */
     private record FilterClause(String sql, Object value) {}
+
+    /**
+     * 子表字段元数据。
+     */
+    private record SubFieldMeta(String name, FieldType type, String physicalCol) {}
 }

@@ -24,6 +24,7 @@ import com.sw.ck.form.mapper.FormSnapshotMapper;
 import com.sw.ck.form.mapper.FormTraceMapper;
 import com.sw.ck.form.service.FormDefService;
 import com.sw.ck.form.service.FormSubmitService;
+import com.sw.ck.form.service.FormFieldValidator;
 import com.sw.ck.form.service.impl.FormDefServiceImpl;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
@@ -823,20 +824,26 @@ class TodoTaskIntegrationTest {
             return new FormDefServiceImpl(formDefMapper, formConfigMapper, formSnapshotMapper,
                     dynamicTableManager, formIdGenerator(), objectMapper);
         }
+        @Bean
+        public FormFieldValidator formFieldValidator(FormConfigMapper formConfigMapper,
+                                                      ObjectMapper objectMapper) {
+            return new FormFieldValidator(formConfigMapper, objectMapper);
+        }
 
         @Bean
         public FormSubmitService formSubmitService(
                 FormDefMapper formDefMapper,
-                FormConfigMapper formConfigMapper,
+                
                 FormTraceMapper formTraceMapper,
                 DynamicTableManager dynamicTableManager,
                 ObjectMapper objectMapper,
                 JdbcTemplate jdbcTemplate,
                 DictFacade dictFacade,
-                DomainEventPublisher eventPublisher) {
-            return new FormSubmitService(formDefMapper, formConfigMapper, formTraceMapper,
+                DomainEventPublisher eventPublisher,
+                FormFieldValidator formFieldValidator) {
+            return new FormSubmitService(formDefMapper, formTraceMapper,
                     dynamicTableManager, formIdGenerator(), objectMapper, jdbcTemplate,
-                    dictFacade, eventPublisher, Optional.empty());
+                    dictFacade, eventPublisher, Optional.empty(), formFieldValidator);
         }
 
         // ---- Workflow 服务 ----
