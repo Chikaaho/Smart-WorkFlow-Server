@@ -25,7 +25,7 @@ dynamic-datasource-spring-boot3-starter · Flyway · jsqlparser · Quartz（单�
 sw-dependencies (BOM)
   └─ sw-framework  : sw-common, sw-security
        └─ sw-basic : storage, notify, job, iot, knowledge, agent
-            └─ sw-biz : system, form, workflow, openapi
+            └─ sw-biz : system, form, bpm (api/engine/process), openapi
                  └─ sw-bootstrap (启动 + Flyway + 自检)
 ```
 
@@ -36,7 +36,7 @@ sw-dependencies (BOM)
 **依赖铁律：**
 
 - **业务模块永不依赖另一模块的 `-biz` 实现。** 只能依赖目标模块的 `-api`。
-- `workflow` 依赖 `form`（不可反向）。workflow 通过
+- `bpm` 依赖 `form`（不可反向）。bpm-process 通过
   `@AutoConfiguration(after = FormAutoConfiguration.class)` 在运行时门控，
   若 `sw.form.enabled` 非 true，fail-fast 抛 `IllegalStateException`。
 - 每个 `sw-biz-*` 拆 `-api`（契约/DTO/SPI 接口）与 `-biz`（实现），
@@ -63,7 +63,7 @@ sw-dependencies (BOM)
   - 字典**控件**（下拉框：绑定哪个 dict type、单/多选、渲染）归 form；
     字典**数据**归 system。form 的字典控件经 `DictFacade` 消费 system 的字典数据，
     **禁止** form 直接访问 `sys_dict` 表。
-- **workflow** — 流程引擎 + 外部数据源执行引擎（详见第 7 节）。
+- **bpm** — 流程引擎（engine 闭源核心/防腐）+ 流程业务（process）+ 契约（api）。外部数据源执行引擎（详见第 7 节）。
 - **openapi** — 开放接口层。
 
 ---
@@ -78,7 +78,7 @@ sw-dependencies (BOM)
 |------|------|------|
 | `sys_` | 身份/组织/RBAC/字典/参数（共享内核） | sw-biz-system |
 | `sw_form_` | 表单元数据、动态宽表、控件库 | sw-biz-form |
-| `sw_workflow_` | 自建流程业务表、外部数据源执行审计表 | sw-biz-workflow |
+| `sw_bpm_` | 自建流程业务表、外部数据源执行审计表（含 `sw_bpm_ext_` 外部数据源子域，非独立模块） | sw-bpm |
 | `sw_openapi_` | 应用、密钥、调用日志 | sw-biz-openapi |
 | `sw_job_` | 任务定义、调度日志 | sw-basic-job |
 | `sw_notify_` | 站内信、模板、发送记录 | sw-basic-notify |
@@ -262,7 +262,7 @@ sw-dependencies (BOM)
 ## 7. 多数据源
 
 - **编码期**：`@DS` 注解系统（经 dynamic-datasource-spring-boot3-starter）用于扩展库。
-- **运行期**：动态 SQL 平台**仅限** `sw-biz-workflow`，只读（SELECT-only）仓库查询，
+- **运行期**：动态 SQL 平台**仅限** `sw-bpm-engine`，只读（SELECT-only）仓库查询，
   附带加密、行数限制、超时、完整审计日志。
 
 ---

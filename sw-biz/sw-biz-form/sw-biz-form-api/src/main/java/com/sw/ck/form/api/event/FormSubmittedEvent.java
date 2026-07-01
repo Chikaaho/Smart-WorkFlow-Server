@@ -9,7 +9,7 @@ import java.util.Map;
  * 表单提交事件。
  * <p>
  * 在 sw-biz-form-biz 的提交逻辑中 publishEvent，
- * 由 sw-biz-workflow-biz 通过 @EventListener 监听，决定是否发起流程。
+ * 由 sw-bpm-process 通过 @EventListener 监听，决定是否发起流程。
  * <p>
  * 定义在 -api 模块，确保 form 不直接依赖 workflow。
  */

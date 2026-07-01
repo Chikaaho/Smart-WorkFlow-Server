@@ -1,0 +1,40 @@
+package com.sw.ck.bpm.api.dto;
+
+import lombok.Data;
+
+import java.util.Date;
+
+/**
+ * BPM 任务 DTO —— Facade 层出参，仅包含引擎层可知字段。
+ * <p>
+ * 本 DTO 不包含 formKey 等业务富化字段（由 process 层通过绑定表富化后
+ * 组装为 {@code TodoTaskRespDTO} 返回前端，Step 2 处理）。
+ * 字段命名对齐 {@code com.sw.ck.bpm.process.dto.TodoTaskRespDTO} 风格。
+ * </p>
+ *
+ * @since 1.0.0
+ */
+@Data
+public class BpmTaskDTO {
+
+    /** Flowable task ID */
+    private String taskId;
+
+    /** 任务名称 */
+    private String name;
+
+    /** Flowable 流程实例 ID */
+    private String processInstanceId;
+
+    /** 流程定义 key */
+    private String processDefinitionKey;
+
+    /** 当前处理人 */
+    private String assignee;
+
+    /** 任务创建时间（Flowable Task.getCreateTime() 原生类型） */
+    private Date createTime;
+
+    /** 业务键（= 表单 recordId，反查表单提交数据用） */
+    private String businessKey;
+}

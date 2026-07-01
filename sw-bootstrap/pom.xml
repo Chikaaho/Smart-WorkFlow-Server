@@ -86,7 +86,12 @@
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-biz-workflow-biz</artifactId>
+            <artifactId>sw-bpm-process</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-bpm-engine</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

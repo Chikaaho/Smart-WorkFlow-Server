@@ -62,7 +62,7 @@ logging:
 
 # ======================== 外部数据源（dev 用 H2 测试密钥） ========================
 sw:
-  workflow:
+  bpm:
     enabled: true
   form:
     enabled: true

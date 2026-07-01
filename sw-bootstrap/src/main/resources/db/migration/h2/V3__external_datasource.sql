@@ -3,7 +3,7 @@
 -- ===================================================================
 
 -- -------------------- 外部数据源连接信息 --------------------
-create table wf_external_datasource (
+create table sw_bpm_ext_datasource (
     id              bigint          not null primary key,
     create_time     timestamp       not null default current_timestamp,
     create_by       bigint,
@@ -21,10 +21,10 @@ create table wf_external_datasource (
     read_only       smallint         not null default 1,
     enabled         smallint         not null default 1
 );
-create unique index uk_wf_ext_ds_name on wf_external_datasource (name);
+create unique index uk_sw_bpm_ext_ds_name on sw_bpm_ext_datasource (name);
 
 -- -------------------- SQL 执行审计日志 --------------------
-create table wf_sql_execution_audit (
+create table sw_bpm_ext_sql_execution_audit (
     id                  bigint          not null primary key,
     create_time         timestamp       not null default current_timestamp,
     create_by           bigint,
@@ -43,6 +43,6 @@ create table wf_sql_execution_audit (
     operator_id         bigint          not null,
     operator_name       varchar(50)     not null
 );
-create index idx_wf_audit_ds_id on wf_sql_execution_audit (datasource_id);
-create index idx_wf_audit_operator_id on wf_sql_execution_audit (operator_id);
-create index idx_wf_audit_create_time on wf_sql_execution_audit (create_time);
+create index idx_sw_bpm_ext_audit_ds_id on sw_bpm_ext_sql_execution_audit (datasource_id);
+create index idx_sw_bpm_ext_audit_operator_id on sw_bpm_ext_sql_execution_audit (operator_id);
+create index idx_sw_bpm_ext_audit_create_time on sw_bpm_ext_sql_execution_audit (create_time);
