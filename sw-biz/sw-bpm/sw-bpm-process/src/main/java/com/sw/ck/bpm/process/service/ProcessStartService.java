@@ -107,11 +107,16 @@ public class ProcessStartService {
                 approverResolver.getClass().getSimpleName(), approver);
 
         // 3. 经 Facade 发起（只放 id 引用变量，submittedData 不塞入流程变量）
+        if (cmd.getTenantId() == null) {
+            throw new IllegalArgumentException(
+                    "tenantId must not be null when starting process; formKey=" + cmd.getFormKey());
+        }
         Map<String, Object> variables = new HashMap<>();
         variables.put("approver", approver);
         variables.put("formKey", cmd.getFormKey());
         variables.put("recordId", cmd.getRecordId());
         variables.put("submitter", String.valueOf(cmd.getSubmitter()));
+        variables.put("tenantId", cmd.getTenantId());
 
         // 原: runtimeService.startProcessInstanceByKeyAndTenantId(...)
         // → bpmRuntimeFacade.startProcess(...)

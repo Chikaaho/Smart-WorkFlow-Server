@@ -11,7 +11,14 @@ import org.springframework.stereotype.Component;
  * 其余审批人策略（角色 / 岗位 / 主管 / 上级 / 字段 / 自选）为后续独立实现，
  * ❌ 禁止在此类中硬编码 if/else 分支。
  * </p>
+ *
+ * @deprecated 已被 {@link com.sw.ck.bpm.engine.resolver.DesignatedApproverResolver} 取代。
+ *     新实现一律接 {@code NodeApproverResolver}，勿再接本接口。
+ *     本类仅保留给老 skeleton 注入路径（{@code ${approver}} / {@code ProcessStartService} /
+ *     {@code skeleton_approval.bpmn20.xml}）使用。
+ *     退休本类 + 老 skeleton 路径为独立小刀，排在脚本档之后执行。
  */
+@Deprecated
 @Component
 public class FixedApproverResolver implements ApproverResolver {
 

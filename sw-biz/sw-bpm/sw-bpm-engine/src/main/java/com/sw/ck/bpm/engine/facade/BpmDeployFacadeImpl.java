@@ -1,8 +1,16 @@
 package com.sw.ck.bpm.engine.facade;
 
+import com.sw.ck.bpm.api.dto.BpmDeployResult;
+import com.sw.ck.bpm.api.dto.ProcessGraph;
+import com.sw.ck.bpm.api.exception.BpmErrorCode;
 import com.sw.ck.bpm.api.facade.BpmDeployFacade;
+import com.sw.ck.bpm.engine.translator.GraphToBpmnTranslator;
+import com.sw.ck.common.exception.BaseException;
+import org.flowable.bpmn.converter.BpmnXMLConverter;
+import org.flowable.bpmn.model.BpmnModel;
 import org.flowable.engine.RepositoryService;
 import org.flowable.engine.repository.Deployment;
+import org.flowable.engine.repository.ProcessDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,5 +38,50 @@ public class BpmDeployFacadeImpl implements BpmDeployFacade {
         log.info("BPMN deployed: deploymentId={}, name={}, resource={}",
                 deployment.getId(), deploymentName, resourcePath);
         return deployment.getId();
+    }
+
+    @Override
+    public byte[] translateToBpmn(ProcessGraph graph) {
+        GraphToBpmnTranslator translator = new GraphToBpmnTranslator();
+        BpmnModel bpmnModel = translator.translate(graph);
+        BpmnXMLConverter converter = new BpmnXMLConverter();
+        byte[] xmlBytes = converter.convertToXML(bpmnModel);
+        log.info("BPMN translation completed: processKey={}, name={}, xmlBytes={}",
+                graph.getProcessKey(), graph.getName(), xmlBytes.length);
+        return xmlBytes;
+    }
+
+    @Override
+    public BpmDeployResult deployModel(byte[] bpmnXml, String deploymentName) {
+        try {
+            Deployment deployment = repositoryService.createDeployment()
+                    .addBytes("process.bpmn20.xml", bpmnXml)
+                    .name(deploymentName)
+                    .deploy();
+
+            // 查询部署中的流程定义（首个）
+            ProcessDefinition processDef = repositoryService.createProcessDefinitionQuery()
+                    .deploymentId(deployment.getId())
+                    .singleResult();
+
+            if (processDef == null) {
+                log.warn("No process definition found in deployment: deploymentId={}", deployment.getId());
+                // 部署成功但无定义——不太可能，但防御性处理
+                return BpmDeployResult.builder()
+                        .deploymentId(deployment.getId())
+                        .build();
+            }
+
+            log.info("BPMN model deployed: deploymentId={}, processDefinitionId={}, processDefKey={}",
+                    deployment.getId(), processDef.getId(), processDef.getKey());
+
+            return BpmDeployResult.builder()
+                    .deploymentId(deployment.getId())
+                    .processDefinitionId(processDef.getId())
+                    .build();
+        } catch (Exception e) {
+            log.error("BPMN deployment failed: {}", e.getMessage(), e);
+            throw new BaseException(BpmErrorCode.DEPLOYMENT_FAILED);
+        }
     }
 }

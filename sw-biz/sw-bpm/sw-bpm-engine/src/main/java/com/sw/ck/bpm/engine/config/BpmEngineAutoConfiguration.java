@@ -1,6 +1,8 @@
 package com.sw.ck.bpm.engine.config;
 
 import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
+import com.sw.ck.bpm.api.spi.assignee.NodeApproverResolver;
+import com.sw.ck.bpm.api.spi.assignee.NodeApproverType;
 import com.sw.ck.bpm.engine.datasource.ExternalDatasourceManager;
 import com.sw.ck.bpm.engine.executor.SqlExecutor;
 import com.sw.ck.bpm.engine.service.ExternalDatasourceService;
@@ -19,6 +21,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 
 import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * BPM 引擎自动配置（Flowable + 外部数据源执行引擎）。
@@ -74,6 +79,31 @@ public class BpmEngineAutoConfiguration {
                                    SqlExecutionAuditService auditService,
                                    ExternalDatasourceProperties properties) {
         return new SqlExecutor(datasourceService, poolManager, auditService, properties);
+    }
+
+    /**
+     * 审批人解析器注册表 —— 按 ApproverType 字符串 key 分发。
+     * <p>
+     * DESIGNATED → {@link com.sw.ck.bpm.engine.resolver.DesignatedApproverResolver}
+     * <br>
+     * SCRIPT → {@link com.sw.ck.bpm.engine.resolver.UnsupportedApproverResolver}（桩）
+     * </p>
+     * 禁 switch 分发，禁 FQCN 选实现。
+     */
+    @Bean
+    public Map<String, NodeApproverResolver> approverResolverMap(
+            List<NodeApproverResolver> resolvers) {
+        Map<String, NodeApproverResolver> map = new HashMap<>();
+        for (NodeApproverResolver resolver : resolvers) {
+            if (resolver instanceof com.sw.ck.bpm.engine.resolver.DesignatedApproverResolver) {
+                map.put(NodeApproverType.DESIGNATED, resolver);
+            } else if (resolver instanceof com.sw.ck.bpm.engine.resolver.UnsupportedApproverResolver) {
+                map.put(NodeApproverType.SCRIPT, resolver);
+            }
+        }
+        log.info("ApproverResolverMap initialized with {} entries: {}",
+                map.size(), map.keySet());
+        return map;
     }
 
     /**
