@@ -7,36 +7,28 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 /**
- * 系统角色表。
+ * 岗位表。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("sys_role")
-public class SysRole extends BaseEntity {
+@TableName("sys_post")
+public class SysPost extends BaseEntity {
 
-    /** 角色名称 */
-    @TableField("name")
-    private String name;
-
-    /** 角色标识（返回前端的 role key） */
+    /** 岗位编码 */
     @TableField("code")
     private String code;
 
-    /** 排序 */
+    /** 岗位名称 */
+    @TableField("name")
+    private String name;
+
+    /** 排序号 */
     @TableField("sort")
     private Integer sort;
 
     /** 状态：1=启用 0=停用 */
     @TableField("status")
     private Integer status;
-
-    /** 数据范围（S7 预留，当前不生效） */
-    @TableField("data_scope")
-    private Integer dataScope;
-
-    /** 内置标记 */
-    @TableField("is_builtin")
-    private Boolean builtIn;
 
     /** 备注/描述 */
     @TableField("description")
