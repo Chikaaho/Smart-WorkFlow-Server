@@ -14,6 +14,14 @@ import java.util.List;
 public interface BpmProcessDefService {
 
     /**
+     * 根据流程 key 查询流程定义。
+     *
+     * @param processKey 流程 key
+     * @return 流程定义实体（可能为 null）
+     */
+    BpmProcessDef findByProcessKey(String processKey);
+
+    /**
      * 创建流程定义（DRAFT 状态）。
      *
      * @param name    流程名称

@@ -49,10 +49,6 @@ spring:
       username: ${MQTT_USERNAME:dev}
       password: ${MQTT_PASSWORD:dev}
 
-  minio:
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin}
-
 logging:
   level:
     root: info
@@ -62,6 +58,15 @@ logging:
 
 # ======================== 外部数据源（dev 用 H2 测试密钥） ========================
 sw:
+  storage:
+    active-provider: local
+    providers:
+      local:
+        base-path: ./uploads
+        url-prefix: /files
+      minio:
+        access-key: ${MINIO_ACCESS_KEY:minioadmin}
+        secret-key: ${MINIO_SECRET_KEY:minioadmin}
   bpm:
     enabled: true
   form:

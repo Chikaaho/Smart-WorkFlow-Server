@@ -26,6 +26,26 @@ public interface BpmTaskFacade {
     List<BpmTaskDTO> queryTodo(String tenantId, String assignee);
 
     /**
+     * 分页查询待办任务。
+     *
+     * @param tenantId 租户 ID
+     * @param assignee 处理人
+     * @param offset   偏移量
+     * @param limit    每页条数
+     * @return 待办任务列表
+     */
+    List<BpmTaskDTO> queryTodoPage(String tenantId, String assignee, int offset, int limit);
+
+    /**
+     * 统计待办任务总数。
+     *
+     * @param tenantId 租户 ID
+     * @param assignee 处理人
+     * @return 待办任务总数
+     */
+    long countTodo(String tenantId, String assignee);
+
+    /**
      * 按流程实例 id 精确查询该实例下的任务（发起后取任务、实例任务列表用）。
      *
      * @param processInstanceId 流程实例 ID
@@ -73,4 +93,40 @@ public interface BpmTaskFacade {
      * @return 业务键
      */
     String getBusinessKey(String processInstanceId);
+
+    /**
+     * 获取流程实例的全部变量。
+     *
+     * @param processInstanceId 流程实例 ID
+     * @return 流程变量 Map
+     */
+    Map<String, Object> getVariables(String processInstanceId);
+
+    /**
+     * 分页查询已办任务（历史任务）。
+     *
+     * @param tenantId 租户 ID
+     * @param assignee 处理人
+     * @param offset   偏移量（从 0 开始）
+     * @param limit    每页条数
+     * @return 已办任务列表（含 endTime）
+     */
+    List<BpmTaskDTO> queryProcessedPage(String tenantId, String assignee, int offset, int limit);
+
+    /**
+     * 统计已办任务总数。
+     *
+     * @param tenantId 租户 ID
+     * @param assignee 处理人
+     * @return 已办任务总数
+     */
+    long countProcessed(String tenantId, String assignee);
+
+    /**
+     * 查询流程实例的审批历史（所有已完成的历史任务节点）。
+     *
+     * @param processInstanceId 流程实例 ID
+     * @return 历史任务列表（按完成时间倒序）
+     */
+    List<BpmTaskDTO> queryHistoryByProcessInstance(String processInstanceId);
 }

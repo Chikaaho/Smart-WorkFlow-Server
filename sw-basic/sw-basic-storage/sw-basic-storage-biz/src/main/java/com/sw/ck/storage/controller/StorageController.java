@@ -1,0 +1,116 @@
+package com.sw.ck.storage.controller;
+
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.exception.CommonErrorCode;
+import com.sw.ck.common.response.R;
+import com.sw.ck.storage.api.StorageFacade;
+import com.sw.ck.storage.api.StorageUploadResult;
+import com.sw.ck.storage.entity.StorageFile;
+import com.sw.ck.storage.service.StorageFileService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * 文件存储 REST 控制器。
+ * <p>
+ * 提供文件上传/下载/删除/列表/详情接口。
+ * </p>
+ */
+@Slf4j
+@RestController
+@RequestMapping("/storage/files")
+@RequiredArgsConstructor
+public class StorageController {
+
+    private final StorageFacade storageFacade;
+    private final StorageFileService storageFileService;
+
+    /**
+     * 上传文件。
+     */
+    @PostMapping("/upload")
+    public R<StorageUploadResult> upload(@RequestParam("file") MultipartFile file) throws IOException {
+        if (file.isEmpty()) {
+            throw new BaseException(CommonErrorCode.PARAM_ERROR.getCode(), "上传文件不能为空");
+        }
+        StorageUploadResult result = storageFacade.upload(
+                file.getInputStream(),
+                file.getOriginalFilename(),
+                file.getContentType());
+        return R.ok(result);
+    }
+
+    /**
+     * 文件列表（分页）。
+     */
+    @GetMapping
+    public R<Page<StorageFile>> list(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size) {
+        Page<StorageFile> pageResult = storageFileService.page(
+                new Page<>(page, size),
+                storageFileService.lambdaQuery()
+                        .orderByDesc(StorageFile::getCreateTime)
+                        .getWrapper());
+        return R.ok(pageResult);
+    }
+
+    /**
+     * 文件详情。
+     */
+    @GetMapping("/{storageKey}")
+    public R<StorageFile> info(@PathVariable String storageKey) {
+        StorageFile file = storageFileService.findByStorageKey(storageKey);
+        if (file == null) {
+            throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "文件不存在");
+        }
+        return R.ok(file);
+    }
+
+    /**
+     * 删除文件。
+     */
+    @DeleteMapping("/{storageKey}")
+    public R<Void> delete(@PathVariable String storageKey) {
+        storageFacade.delete(storageKey);
+        return R.ok();
+    }
+
+    /**
+     * 下载文件。
+     */
+    @GetMapping("/{storageKey}/download")
+    public ResponseEntity<InputStreamResource> download(@PathVariable String storageKey) {
+        StorageFile file = storageFileService.findByStorageKey(storageKey);
+        if (file == null) {
+            throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "文件不存在");
+        }
+        InputStreamResource resource = new InputStreamResource(storageFacade.download(storageKey));
+        String encodedFileName = URLEncoder.encode(
+                file.getOriginalName() != null ? file.getOriginalName() : "file",
+                StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(
+                        file.getContentType() != null ? file.getContentType() : "application/octet-stream"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename*=UTF-8''" + encodedFileName)
+                .body(resource);
+    }
+}

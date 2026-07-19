@@ -57,6 +57,13 @@ public class BpmProcessDefServiceImpl implements BpmProcessDefService {
     }
 
     @Override
+    public BpmProcessDef findByProcessKey(String processKey) {
+        LambdaQueryWrapper<BpmProcessDef> wrapper = Wrappers.<BpmProcessDef>lambdaQuery()
+                .eq(BpmProcessDef::getProcessKey, processKey);
+        return mapper.selectOne(wrapper);
+    }
+
+    @Override
     @Transactional
     public BpmProcessDef createDef(String name, String formKey) {
         // 校验表单存在（2009）

@@ -37,4 +37,7 @@ public class BpmTaskDTO {
 
     /** 业务键（= 表单 recordId，反查表单提交数据用） */
     private String businessKey;
+
+    /** 任务完成时间（仅已办/historic 任务有值，进行中任务为 null） */
+    private Date endTime;
 }

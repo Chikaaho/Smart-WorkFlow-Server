@@ -17,7 +17,8 @@
     <description>基础能力层：存储/通知/定时/IoT/知识库/AI 助手</description>
 
     <modules>
-        <module>sw-basic-storage</module>
+        <module>sw-basic-storage/sw-basic-storage-api</module>
+        <module>sw-basic-storage/sw-basic-storage-biz</module>
         <module>sw-basic-notify</module>
         <module>sw-basic-job</module>
         <module>sw-basic-iot</module>

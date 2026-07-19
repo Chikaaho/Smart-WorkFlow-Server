@@ -12,37 +12,13 @@
     </parent>
 
     <artifactId>sw-basic-storage</artifactId>
-    <packaging>jar</packaging>
+    <packaging>pom</packaging>
 
     <name>Smart-WorkFlow :: Basic :: Storage</name>
-    <description>文件存储模块（MinIO）</description>
+    <description>文件存储模块父 POM（多向可配置：本地 / MinIO / COS / 七牛云）</description>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>com.sw.ck</groupId>
-                <artifactId>sw-dependencies</artifactId>
-                <version>${project.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
-    <dependencies>
-        <dependency>
-            <groupId>com.sw.ck</groupId>
-            <artifactId>sw-common</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.minio</groupId>
-            <artifactId>minio</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
-    </dependencies>
+    <modules>
+        <module>sw-basic-storage-api</module>
+        <module>sw-basic-storage-biz</module>
+    </modules>
 </project>

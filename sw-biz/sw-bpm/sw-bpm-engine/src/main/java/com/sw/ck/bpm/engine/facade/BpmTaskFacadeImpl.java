@@ -2,9 +2,11 @@ package com.sw.ck.bpm.engine.facade;
 
 import com.sw.ck.bpm.api.dto.BpmTaskDTO;
 import com.sw.ck.bpm.api.facade.BpmTaskFacade;
+import org.flowable.engine.HistoryService;
 import org.flowable.engine.RepositoryService;
 import org.flowable.engine.RuntimeService;
 import org.flowable.engine.TaskService;
+import org.flowable.task.api.history.HistoricTaskInstance;
 import org.flowable.engine.repository.ProcessDefinition;
 import org.flowable.engine.runtime.ProcessInstance;
 import org.flowable.task.api.Task;
@@ -27,12 +29,14 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
     private final TaskService taskService;
     private final RuntimeService runtimeService;
     private final RepositoryService repositoryService;
+    private final HistoryService historyService;
 
     public BpmTaskFacadeImpl(TaskService taskService, RuntimeService runtimeService,
-                             RepositoryService repositoryService) {
+                             RepositoryService repositoryService, HistoryService historyService) {
         this.taskService = taskService;
         this.runtimeService = runtimeService;
         this.repositoryService = repositoryService;
+        this.historyService = historyService;
     }
 
     @Override
@@ -74,6 +78,68 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
             taskService.complete(taskId);
         }
         log.info("BPM task completed: taskId={}", taskId);
+    }
+
+    @Override
+    public List<BpmTaskDTO> queryTodoPage(String tenantId, String assignee, int offset, int limit) {
+        List<Task> tasks = taskService.createTaskQuery()
+                .taskTenantId(tenantId)
+                .taskAssignee(assignee)
+                .orderByTaskCreateTime().desc()
+                .listPage(offset, limit);
+
+        return tasks.stream()
+                .map(this::toDto)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countTodo(String tenantId, String assignee) {
+        return taskService.createTaskQuery()
+                .taskTenantId(tenantId)
+                .taskAssignee(assignee)
+                .count();
+    }
+
+    @Override
+    public Map<String, Object> getVariables(String processInstanceId) {
+        return runtimeService.getVariables(processInstanceId);
+    }
+
+    @Override
+    public List<BpmTaskDTO> queryProcessedPage(String tenantId, String assignee, int offset, int limit) {
+        List<HistoricTaskInstance> tasks = historyService.createHistoricTaskInstanceQuery()
+                .taskTenantId(tenantId)
+                .taskAssignee(assignee)
+                .finished()
+                .orderByHistoricTaskInstanceEndTime().desc()
+                .listPage(offset, limit);
+
+        return tasks.stream()
+                .map(this::toDtoFromHistory)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countProcessed(String tenantId, String assignee) {
+        return historyService.createHistoricTaskInstanceQuery()
+                .taskTenantId(tenantId)
+                .taskAssignee(assignee)
+                .finished()
+                .count();
+    }
+
+    @Override
+    public List<BpmTaskDTO> queryHistoryByProcessInstance(String processInstanceId) {
+        List<HistoricTaskInstance> tasks = historyService.createHistoricTaskInstanceQuery()
+                .processInstanceId(processInstanceId)
+                .finished()
+                .orderByHistoricTaskInstanceEndTime().desc()
+                .list();
+
+        return tasks.stream()
+                .map(this::toDtoFromHistory)
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -134,12 +200,40 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
      * </p>
      */
     private String getProcessDefinitionKey(Task task) {
-        if (task.getProcessDefinitionId() == null) {
+        return getProcessDefinitionKeyFromId(task.getProcessDefinitionId());
+    }
+
+    /**
+     * 从 processDefinitionId 解析 process definition key。
+     * <p>
+     * 提取为公共方法，供 {@link #toDto(Task)} 和 {@link #toDtoFromHistory(HistoricTaskInstance)} 共用。
+     * </p>
+     */
+    private String getProcessDefinitionKeyFromId(String processDefinitionId) {
+        if (processDefinitionId == null) {
             return null;
         }
         ProcessDefinition pd = repositoryService.createProcessDefinitionQuery()
-                .processDefinitionId(task.getProcessDefinitionId())
+                .processDefinitionId(processDefinitionId)
                 .singleResult();
         return pd != null ? pd.getKey() : null;
+    }
+
+    /**
+     * 将 Flowable HistoricTaskInstance 转为 BpmTaskDTO。
+     * <p>
+     * 与 {@link #toDto(Task)} 的区别：增加 endTime 字段。
+     * </p>
+     */
+    private BpmTaskDTO toDtoFromHistory(HistoricTaskInstance task) {
+        BpmTaskDTO dto = new BpmTaskDTO();
+        dto.setTaskId(task.getId());
+        dto.setName(task.getName());
+        dto.setProcessInstanceId(task.getProcessInstanceId());
+        dto.setProcessDefinitionKey(getProcessDefinitionKeyFromId(task.getProcessDefinitionId()));
+        dto.setAssignee(task.getAssignee());
+        dto.setCreateTime(task.getCreateTime());
+        dto.setEndTime(task.getEndTime());
+        return dto;
     }
 }

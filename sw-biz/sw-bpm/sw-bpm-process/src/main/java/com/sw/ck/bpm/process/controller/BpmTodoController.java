@@ -4,13 +4,20 @@ import com.sw.ck.bpm.api.dto.BpmTaskDTO;
 import com.sw.ck.bpm.api.event.BpmNotifyEvent;
 import com.sw.ck.bpm.api.event.BpmNotifyTrigger;
 import com.sw.ck.bpm.api.facade.BpmTaskFacade;
+import com.sw.ck.bpm.process.dto.ApprovalHistoryItemDTO;
+import com.sw.ck.bpm.process.dto.ProcessedTaskRespDTO;
+import com.sw.ck.bpm.process.dto.TaskDetailRespDTO;
 import com.sw.ck.bpm.process.dto.TodoTaskRespDTO;
 import com.sw.ck.bpm.process.entity.BpmInstance;
+import com.sw.ck.bpm.process.entity.BpmProcessDef;
 import com.sw.ck.bpm.process.entity.InstanceStatusEnum;
 import com.sw.ck.bpm.process.service.BpmInstanceService;
+import com.sw.ck.bpm.process.service.BpmProcessDefService;
 import com.sw.ck.common.event.DomainEventPublisher;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
@@ -26,6 +33,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -64,41 +72,55 @@ public class BpmTodoController {
 
     private final BpmTaskFacade bpmTaskFacade;
     private final BpmInstanceService bpmInstanceService;
+    private final BpmProcessDefService bpmProcessDefService;
     private final DomainEventPublisher domainEventPublisher;
 
     public BpmTodoController(BpmTaskFacade bpmTaskFacade,
                              BpmInstanceService bpmInstanceService,
+                             BpmProcessDefService bpmProcessDefService,
                              DomainEventPublisher domainEventPublisher) {
         this.bpmTaskFacade = bpmTaskFacade;
         this.bpmInstanceService = bpmInstanceService;
+        this.bpmProcessDefService = bpmProcessDefService;
         this.domainEventPublisher = domainEventPublisher;
     }
 
     /**
-     * 当前用户待办列表。
+     * 当前用户待办列表（分页）。
      * <p>
      * 按 {@code taskTenantId + taskAssignee} 双条件查询，
-     * 将 BpmTaskDTO 富化为 TodoTaskRespDTO（Date→LocalDateTime 转换 + formKey 富化）。
+     * 将 BpmTaskDTO 富化为 TodoTaskRespDTO（Date→LocalDateTime 转换 + formKey + processName 富化）。
      * </p>
      *
-     * @return 待办任务列表（可能为空）
+     * @param pageParam 分页参数（pageNum 从 1 开始）
+     * @return 分页待办任务列表
      */
     @GetMapping("/todo")
-    public R<List<TodoTaskRespDTO>> todo() {
+    public R<PageResult<TodoTaskRespDTO>> todo(PageParam pageParam) {
         LoginUser loginUser = LoginUserHolder.get();
         String tenantId = String.valueOf(loginUser.getTenantId());
         String assignee = String.valueOf(loginUser.getUserId());
 
-        List<BpmTaskDTO> tasks = bpmTaskFacade.queryTodo(tenantId, assignee);
+        long offset = (pageParam.getPageNum() - 1) * pageParam.getPageSize();
+        int limit = (int) pageParam.getPageSize();
+
+        List<BpmTaskDTO> tasks = bpmTaskFacade.queryTodoPage(tenantId, assignee, (int) offset, limit);
+        long total = bpmTaskFacade.countTodo(tenantId, assignee);
 
         List<TodoTaskRespDTO> dtos = tasks.stream()
                 .map(this::toTodoTaskDTO)
                 .collect(Collectors.toList());
 
-        log.debug("待办查询: tenantId={}, assignee={}, count={}",
-                tenantId, assignee, dtos.size());
+        log.debug("待办查询: tenantId={}, assignee={}, total={}, pageNum={}, pageSize={}",
+                tenantId, assignee, total, pageParam.getPageNum(), pageParam.getPageSize());
 
-        return R.ok(dtos);
+        PageResult<TodoTaskRespDTO> pageResult = new PageResult<>();
+        pageResult.setRecords(dtos);
+        pageResult.setTotal(total);
+        pageResult.setPageNum(pageParam.getPageNum());
+        pageResult.setPageSize(pageParam.getPageSize());
+
+        return R.ok(pageResult);
     }
 
     /**
@@ -179,14 +201,164 @@ public class BpmTodoController {
                 processInstanceId, instance.getInitiatorId());
     }
 
+    /**
+     * 驳回审批。
+     *
+     * @param taskId Flowable task ID
+     * @return 操作成功
+     * @throws BaseException 任务不存在 / 越权时抛出
+     */
+    @Transactional
+    @PostMapping("/{taskId}/reject")
+    public R<Void> reject(@PathVariable String taskId) {
+        LoginUser loginUser = LoginUserHolder.get();
+
+        BpmTaskDTO task = bpmTaskFacade.getTask(taskId);
+        if (task == null) {
+            throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "任务不存在");
+        }
+
+        if (!String.valueOf(loginUser.getUserId()).equals(task.getAssignee())) {
+            log.warn("越权拒绝（审批人不匹配）: taskId={}, taskAssignee={}, currentUserId={}",
+                    taskId, task.getAssignee(), loginUser.getUserId());
+            throw new BaseException(CommonErrorCode.FORBIDDEN.getCode(), "无权处理该任务");
+        }
+
+        String processInstanceId = task.getProcessInstanceId();
+
+        Map<String, Object> variables = new java.util.HashMap<>();
+        variables.put("outcome", "REJECTED");
+        bpmTaskFacade.complete(taskId, variables);
+        log.info("审批已驳回: taskId={}, processInstanceId={}, userId={}",
+                taskId, processInstanceId, loginUser.getUserId());
+
+        if (!bpmTaskFacade.isProcessActive(processInstanceId)) {
+            bpmInstanceService.updateStatus(
+                    processInstanceId, InstanceStatusEnum.REJECTED.getCode());
+            log.info("流程已结束（驳回），实例状态更新为 REJECTED: processInstanceId={}",
+                    processInstanceId);
+        }
+
+        return R.ok();
+    }
+
     // ==================== 内部方法 ====================
+
+    /**
+     * 任务详情。
+     * <p>
+     * 返回任务基本信息、发起人、流程变量等完整信息。
+     * </p>
+     *
+     * @param taskId Flowable task ID
+     * @return 任务详情
+     * @throws BaseException 任务不存在时抛出
+     */
+    @GetMapping("/{taskId}")
+    public R<TaskDetailRespDTO> detail(@PathVariable String taskId) {
+        BpmTaskDTO task = bpmTaskFacade.getTask(taskId);
+        if (task == null) {
+            throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "任务不存在");
+        }
+
+        TaskDetailRespDTO dto = new TaskDetailRespDTO();
+        dto.setTaskId(task.getTaskId());
+        dto.setTaskName(task.getName());
+        dto.setProcessInstanceId(task.getProcessInstanceId());
+        dto.setProcessDefinitionKey(task.getProcessDefinitionKey());
+
+        // processName 富化
+        if (task.getProcessDefinitionKey() != null) {
+            BpmProcessDef processDef = bpmProcessDefService.findByProcessKey(task.getProcessDefinitionKey());
+            if (processDef != null) {
+                dto.setProcessName(processDef.getName());
+            }
+        }
+
+        // formKey 从流程变量获取
+        String formKey = bpmTaskFacade.getVariable(task.getProcessInstanceId(), "formKey");
+        dto.setFormKey(formKey);
+
+        dto.setBusinessKey(task.getBusinessKey());
+        dto.setAssignee(task.getAssignee());
+
+        // 发起人
+        bpmInstanceService.findByProcessInstanceId(task.getProcessInstanceId())
+                .ifPresent(instance -> dto.setInitiatorId(instance.getInitiatorId()));
+
+        // 任务创建时间
+        if (task.getCreateTime() != null) {
+            dto.setCreateTime(LocalDateTime.ofInstant(
+                    task.getCreateTime().toInstant(), ZoneId.systemDefault()));
+        }
+
+        // 流程变量
+        Map<String, Object> variables = bpmTaskFacade.getVariables(task.getProcessInstanceId());
+        dto.setProcessVariables(variables);
+
+        log.debug("任务详情查询: taskId={}, processInstanceId={}", taskId, task.getProcessInstanceId());
+
+        // 审批历史
+        List<BpmTaskDTO> historyTasks = bpmTaskFacade.queryHistoryByProcessInstance(task.getProcessInstanceId());
+        List<ApprovalHistoryItemDTO> history = new java.util.ArrayList<>();
+        for (BpmTaskDTO h : historyTasks) {
+            ApprovalHistoryItemDTO item = new ApprovalHistoryItemDTO();
+            item.setTaskId(h.getTaskId());
+            item.setTaskName(h.getName());
+            item.setAssignee(h.getAssignee());
+            if (h.getCreateTime() != null) {
+                item.setCreateTime(LocalDateTime.ofInstant(
+                        h.getCreateTime().toInstant(), ZoneId.systemDefault()));
+            }
+            if (h.getEndTime() != null) {
+                item.setEndTime(LocalDateTime.ofInstant(
+                        h.getEndTime().toInstant(), ZoneId.systemDefault()));
+            }
+            history.add(item);
+        }
+        dto.setApprovalHistory(history);
+
+        return R.ok(dto);
+    }
+
+    /**
+     * 当前用户已办列表（分页）。
+     */
+    @GetMapping("/processed")
+    public R<PageResult<ProcessedTaskRespDTO>> processed(PageParam pageParam) {
+        LoginUser loginUser = LoginUserHolder.get();
+        String tenantId = String.valueOf(loginUser.getTenantId());
+        String assignee = String.valueOf(loginUser.getUserId());
+
+        long offset = (pageParam.getPageNum() - 1) * pageParam.getPageSize();
+        int limit = (int) pageParam.getPageSize();
+
+        List<BpmTaskDTO> tasks = bpmTaskFacade.queryProcessedPage(tenantId, assignee, (int) offset, limit);
+        long total = bpmTaskFacade.countProcessed(tenantId, assignee);
+
+        List<ProcessedTaskRespDTO> dtos = tasks.stream()
+                .map(this::toProcessedTaskDTO)
+                .collect(Collectors.toList());
+
+        log.debug("已办查询: tenantId={}, assignee={}, total={}, pageNum={}, pageSize={}",
+                tenantId, assignee, total, pageParam.getPageNum(), pageParam.getPageSize());
+
+        PageResult<ProcessedTaskRespDTO> pageResult = new PageResult<>();
+        pageResult.setRecords(dtos);
+        pageResult.setTotal(total);
+        pageResult.setPageNum(pageParam.getPageNum());
+        pageResult.setPageSize(pageParam.getPageSize());
+
+        return R.ok(pageResult);
+    }
 
     /**
      * 将 BpmTaskDTO(Date) 富化为 TodoTaskRespDTO(LocalDateTime)。
      * <p>
      * 时间转换：使用系统默认时区 {@code LocalDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault())}，
      * 不静默丢精度。
-     * formKey 从流程变量获取（经 Facade），businessKey 由 Facade 直接返回。
+     * formKey 和 processName 从流程变量/流程定义获取（经 Facade/Service），
+     * businessKey 由 Facade 直接返回。
      * </p>
      */
     private TodoTaskRespDTO toTodoTaskDTO(BpmTaskDTO task) {
@@ -207,6 +379,46 @@ public class BpmTodoController {
         String formKey = bpmTaskFacade.getVariable(
                 task.getProcessInstanceId(), "formKey");
         dto.setFormKey(formKey);
+
+        // processName 富化（经 BpmProcessDefService）
+        if (task.getProcessDefinitionKey() != null) {
+            BpmProcessDef processDef = bpmProcessDefService.findByProcessKey(task.getProcessDefinitionKey());
+            if (processDef != null) {
+                dto.setProcessName(processDef.getName());
+            }
+        }
+
+        return dto;
+    }
+
+    /**
+     * 将 BpmTaskDTO 富化为 ProcessedTaskRespDTO。
+     */
+    private ProcessedTaskRespDTO toProcessedTaskDTO(BpmTaskDTO task) {
+        ProcessedTaskRespDTO dto = new ProcessedTaskRespDTO();
+        dto.setTaskId(task.getTaskId());
+        dto.setTaskName(task.getName());
+        dto.setProcessInstanceId(task.getProcessInstanceId());
+
+        if (task.getCreateTime() != null) {
+            dto.setCreateTime(LocalDateTime.ofInstant(
+                    task.getCreateTime().toInstant(), ZoneId.systemDefault()));
+        }
+        if (task.getEndTime() != null) {
+            dto.setEndTime(LocalDateTime.ofInstant(
+                    task.getEndTime().toInstant(), ZoneId.systemDefault()));
+        }
+
+        String formKey = bpmTaskFacade.getVariable(
+                task.getProcessInstanceId(), "formKey");
+        dto.setFormKey(formKey);
+
+        if (task.getProcessDefinitionKey() != null) {
+            BpmProcessDef processDef = bpmProcessDefService.findByProcessKey(task.getProcessDefinitionKey());
+            if (processDef != null) {
+                dto.setProcessName(processDef.getName());
+            }
+        }
 
         return dto;
     }
