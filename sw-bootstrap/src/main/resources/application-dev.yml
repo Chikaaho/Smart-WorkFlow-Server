@@ -67,6 +67,8 @@ sw:
       minio:
         access-key: ${MINIO_ACCESS_KEY:minioadmin}
         secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  job:
+    enabled: true
   bpm:
     enabled: true
   form:

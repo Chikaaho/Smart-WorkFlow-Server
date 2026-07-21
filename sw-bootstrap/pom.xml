@@ -54,7 +54,7 @@
         </dependency>
         <dependency>
             <groupId>com.sw.ck</groupId>
-            <artifactId>sw-basic-job</artifactId>
+            <artifactId>sw-basic-job-biz</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

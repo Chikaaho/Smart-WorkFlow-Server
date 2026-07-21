@@ -56,6 +56,7 @@ spring:
       - classpath:db/migration/notify/{vendor}
       - classpath:db/migration/form/{vendor}
       - classpath:db/migration/storage/{vendor}
+      - classpath:db/migration/job/{vendor}
     baseline-on-migrate: true
     validate-on-migrate: true
     out-of-order: false
@@ -119,6 +120,12 @@ sw:
         secret-key: ${QINIU_SECRET_KEY:}
         bucket: ${QINIU_BUCKET:}
         domain: ${QINIU_DOMAIN:}
+  # ---------- 定时任务 ----------
+  job:
+    enabled: true
+    pool-size: 10
+    log-retention-days: 30
+
   # ---------- 多租户（列级隔离） ----------
   tenant:
     ignore-tables:

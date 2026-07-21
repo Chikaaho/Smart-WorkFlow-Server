@@ -20,7 +20,8 @@
         <module>sw-basic-storage/sw-basic-storage-api</module>
         <module>sw-basic-storage/sw-basic-storage-biz</module>
         <module>sw-basic-notify</module>
-        <module>sw-basic-job</module>
+        <module>sw-basic-job/sw-basic-job-api</module>
+        <module>sw-basic-job/sw-basic-job-biz</module>
         <module>sw-basic-iot</module>
         <module>sw-basic-knowledge</module>
         <module>sw-basic-agent</module>
