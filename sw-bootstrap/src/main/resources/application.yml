@@ -156,6 +156,10 @@ sw:
       - /webjars/**
       - /actuator/**
       - /auth/login
+      - /auth/refresh
+      - /auth/logout
+    cookie:
+      secure: false
     jwt:
       secret: ${JWT_SECRET:smart-workflow-jwt-secret-CHANGE-ME-IN-PRODUCTION-please}
       expire-seconds: 7200

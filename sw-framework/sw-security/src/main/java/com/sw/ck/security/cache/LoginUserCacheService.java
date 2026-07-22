@@ -23,8 +23,11 @@ public class LoginUserCacheService {
     private final JwtProperties jwtProperties;
 
     public void cache(LoginUser loginUser) {
+        long ttlSeconds = jwtProperties.getAccessExpireSeconds() > 0
+                ? jwtProperties.getAccessExpireSeconds()
+                : jwtProperties.getExpireSeconds();
         redisTemplate.opsForValue().set(buildKey(loginUser.getUserId()), loginUser,
-                jwtProperties.getExpireSeconds(), TimeUnit.SECONDS);
+                ttlSeconds, TimeUnit.SECONDS);
     }
 
     public LoginUser get(Long userId) {
