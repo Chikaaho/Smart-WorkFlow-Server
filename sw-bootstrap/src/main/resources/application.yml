@@ -159,6 +159,8 @@ sw:
     jwt:
       secret: ${JWT_SECRET:smart-workflow-jwt-secret-CHANGE-ME-IN-PRODUCTION-please}
       expire-seconds: 7200
+      access-expire-seconds: 900
+      refresh-expire-seconds: 604800
 
 # ======================== MyBatis-Plus ========================
 mybatis-plus:

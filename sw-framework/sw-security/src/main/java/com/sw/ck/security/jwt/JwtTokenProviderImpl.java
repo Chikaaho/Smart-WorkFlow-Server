@@ -26,7 +26,10 @@ public class JwtTokenProviderImpl implements JwtTokenProvider {
     @Override
     public String generateToken(Long userId) {
         Date now = new Date();
-        Date expiration = new Date(now.getTime() + jwtProperties.getExpireSeconds() * 1000);
+        long expireSeconds = jwtProperties.getAccessExpireSeconds() > 0
+                ? jwtProperties.getAccessExpireSeconds()
+                : jwtProperties.getExpireSeconds();
+        Date expiration = new Date(now.getTime() + expireSeconds * 1000);
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .issuedAt(now)
