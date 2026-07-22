@@ -15,6 +15,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Refresh Token 服务 — 生成/校验/轮换/撤销。
@@ -32,6 +35,7 @@ public class RefreshTokenService {
     private static final String TOKEN_HASH_ALGO = "SHA-256";
 
     private final SysRefreshTokenMapper sysRefreshTokenMapper;
+    private final PlatformTransactionManager transactionManager;
     private final SecureRandom secureRandom = new SecureRandom();
 
     // ========== 公开 API ==========
@@ -91,14 +95,19 @@ public class RefreshTokenService {
         if (existing.getRevoked() != null && existing.getRevoked() == 1) {
             log.error("REPLAY DETECTED: revoked refresh token reused, userId={}, tokenId={}",
                     existing.getUserId(), existing.getId());
-            revokeAllForUser(existing.getUserId());
+            // 在独立事务中执行撤销，确保在 BaseException 抛出前已 COMMIT，不被回滚
+            new TransactionTemplate(transactionManager) {{
+                setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            }}.executeWithoutResult(status -> revokeAllForUser(existing.getUserId()));
             throw new BaseException(401, "refresh token 已被使用过，全部会话已失效，请重新登录");
         }
         // 4. 已过期 → 拒绝
         if (existing.getExpiresAt() != null && existing.getExpiresAt().isBefore(LocalDateTime.now())) {
             log.warn("Refresh token expired for userId={}, tokenId={}", existing.getUserId(), existing.getId());
-            // 标记过期 token 为已撤销（清理）
-            revokeTokenById(existing.getId());
+            // 在独立事务中执行撤销，确保在 BaseException 抛出前已 COMMIT，不被回滚
+            new TransactionTemplate(transactionManager) {{
+                setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            }}.executeWithoutResult(status -> revokeTokenById(existing.getId()));
             throw new BaseException(401, "refresh token 已过期，请重新登录");
         }
         // 5. 撤销旧 token
