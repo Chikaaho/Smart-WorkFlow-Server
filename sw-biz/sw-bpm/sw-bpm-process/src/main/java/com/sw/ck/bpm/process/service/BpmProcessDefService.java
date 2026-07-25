@@ -78,6 +78,18 @@ public interface BpmProcessDefService {
     void deleteDef(Long id);
 
     /**
+     * 返回流程定义已部署的 BPMN XML 字符串。
+     * <p>
+     * 仅 {@code PUBLISHED} 状态且 {@code processDefinitionId} 非空的定义
+     * 才允许获取；否则抛业务异常。
+     * </p>
+     *
+     * @param id 流程定义 ID（主键）
+     * @return 原始 BPMN XML 字符串
+     */
+    String getBpmnXml(Long id);
+
+    /**
      * 发布流程定义（DRAFT → PUBLISHED）。
      * <p>
      * 发布流水线：

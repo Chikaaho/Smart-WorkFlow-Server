@@ -47,4 +47,16 @@ public interface BpmDeployFacade {
      * @return 部署结果（含 deploymentId + processDefinitionId）
      */
     BpmDeployResult deployModel(byte[] bpmnXml, String deploymentName);
+
+    /**
+     * 返回 Flowable 已部署流程定义对应的原始 BPMN XML 字符串。
+     * <p>
+     * 使用 {@code repositoryService.getResourceAsStream} 取回部署时存档的原始 XML，
+     * 保真度高于通过 {@code BpmnModel} 重新序列化。
+     * </p>
+     *
+     * @param processDefinitionId Flowable 流程定义 ID
+     * @return 原始 BPMN XML 字符串
+     */
+    String getBpmnXml(String processDefinitionId);
 }

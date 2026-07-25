@@ -5,6 +5,7 @@ import com.sw.ck.bpm.api.dto.GraphElement;
 import com.sw.ck.bpm.api.dto.ProcessGraph;
 import com.sw.ck.bpm.api.spi.assignee.NodeApproverResolver;
 import com.sw.ck.bpm.api.spi.assignee.NodeApproverType;
+import com.sw.ck.bpm.engine.facade.BpmDeployFacadeImpl;
 import com.sw.ck.bpm.engine.listener.ApprovalTaskListener;
 import com.sw.ck.bpm.engine.resolver.DesignatedApproverResolver;
 import com.sw.ck.bpm.engine.translator.GraphToBpmnTranslator;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Flowable 内存集成测试 —— 验证发布最小图 → 发起实例 → 审批人注入全链路。
@@ -163,6 +165,54 @@ class ApprovalProcessIntegrationTest {
                 .as("process → listener → NodeApproverContext 租户链路打通，ctx.tenantId 不再为 null")
                 .isInstanceOfSatisfying(Long.class,
                         v -> assertThat(v).isEqualTo(1L));
+    }
+
+    @Test
+    void getBpmnXml_shouldReturnOriginalDeployedXml() {
+        // ========== 1. 构建简单 BPMN 模型 ==========
+        ProcessGraph graph = ProcessGraph.builder()
+                .processKey("bpmn_xml_test")
+                .name("BPMN XML Test")
+                .elements(List.of(
+                        node("StartEvent_1", "START"),
+                        node("EndEvent_1", "END"),
+                        edge("e1", "StartEvent_1", "EndEvent_1")
+                ))
+                .build();
+
+        GraphToBpmnTranslator translator = new GraphToBpmnTranslator();
+        BpmnModel model = translator.translate(graph);
+        BpmnXMLConverter converter = new BpmnXMLConverter();
+        byte[] xmlBytes = converter.convertToXML(model);
+        assertThat(xmlBytes).isNotEmpty();
+
+        // ========== 2. 部署 ==========
+        deployment = repositoryService.createDeployment()
+                .addBytes("bpmn_xml_test.bpmn20.xml", xmlBytes)
+                .name("bpmn_xml_test_deployment")
+                .deploy();
+
+        ProcessDefinition def = repositoryService.createProcessDefinitionQuery()
+                .deploymentId(deployment.getId())
+                .singleResult();
+        assertThat(def).isNotNull();
+        assertThat(def.getKey()).isEqualTo("bpmn_xml_test");
+
+        // ========== 3. 调用 getBpmnXml ==========
+        BpmDeployFacadeImpl facadeImpl = new BpmDeployFacadeImpl(repositoryService);
+        String resultXml = facadeImpl.getBpmnXml(def.getId());
+
+        // ========== 4. 断言 ==========
+        assertThat(resultXml).isNotEmpty();
+        assertThat(resultXml).contains("StartEvent_1");
+        assertThat(resultXml).contains("EndEvent_1");
+        // 验证可被解析为合法 XML
+        assertThatCode(() -> {
+            javax.xml.parsers.DocumentBuilderFactory factory =
+                    javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            factory.newDocumentBuilder().parse(
+                    new java.io.ByteArrayInputStream(resultXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        }).doesNotThrowAnyException();
     }
 
     // ==================== helpers ====================

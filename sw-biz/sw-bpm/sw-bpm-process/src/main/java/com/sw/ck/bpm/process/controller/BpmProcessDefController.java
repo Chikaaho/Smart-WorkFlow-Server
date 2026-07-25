@@ -124,6 +124,21 @@ public class BpmProcessDefController {
     }
 
     /**
+     * 读取流程定义已部署的 BPMN XML。
+     * <p>
+     * 仅已发布（PUBLISHED）的流程定义有 BPMN XML 数据。
+     * </p>
+     *
+     * @param id 流程定义 ID
+     * @return 原始 BPMN XML 字符串
+     */
+    @GetMapping("/{id}/bpmn-xml")
+    public R<String> getBpmnXml(@PathVariable Long id) {
+        String bpmnXml = bpmProcessDefService.getBpmnXml(id);
+        return R.ok(bpmnXml);
+    }
+
+    /**
      * 分页查询流程定义列表（不含 graph_json 大字段）。
      */
     @GetMapping

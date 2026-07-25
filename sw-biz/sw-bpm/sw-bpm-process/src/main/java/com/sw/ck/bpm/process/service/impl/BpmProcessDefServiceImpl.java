@@ -152,6 +152,15 @@ public class BpmProcessDefServiceImpl implements BpmProcessDefService {
     }
 
     @Override
+    public String getBpmnXml(Long id) {
+        BpmProcessDef def = getExisting(id);
+        if (!STATUS_PUBLISHED.equals(def.getStatus()) || def.getProcessDefinitionId() == null) {
+            throw new BaseException(BpmErrorCode.PROCESS_NOT_PUBLISHED);
+        }
+        return bpmDeployFacade.getBpmnXml(def.getProcessDefinitionId());
+    }
+
+    @Override
     @Transactional
     public BpmProcessDef publish(Long id) {
         BpmProcessDef def = getExisting(id);

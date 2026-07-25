@@ -15,6 +15,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+
 /**
  * BPM 部署门面实现 —— 封装 Flowable {@link RepositoryService}。
  */
@@ -82,6 +87,23 @@ public class BpmDeployFacadeImpl implements BpmDeployFacade {
         } catch (Exception e) {
             log.error("BPMN deployment failed: {}", e.getMessage(), e);
             throw new BaseException(BpmErrorCode.DEPLOYMENT_FAILED);
+        }
+    }
+
+    @Override
+    public String getBpmnXml(String processDefinitionId) {
+        ProcessDefinition processDefinition = repositoryService.createProcessDefinitionQuery()
+                .processDefinitionId(processDefinitionId)
+                .singleResult();
+        if (processDefinition == null) {
+            throw new IllegalStateException(
+                    "Flowable 流程定义不存在，processDefinitionId=" + processDefinitionId);
+        }
+        try (InputStream is = repositoryService.getResourceAsStream(
+                processDefinition.getDeploymentId(), processDefinition.getResourceName())) {
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 }

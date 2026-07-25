@@ -31,6 +31,7 @@ public enum BpmErrorCode implements ErrorCode {
     PROCESS_KEY_FROZEN(2101, "流程定义已有发布版本，process_key 不可变更"),
     TRANSLATION_FAILED(2102, "图翻译为 BPMN 失败"),
     DEPLOYMENT_FAILED(2103, "BPMN 部署失败"),
+    PROCESS_NOT_PUBLISHED(2104, "流程未发布，无法获取 BPMN XML"),
 
     // ==================== 审批人解析（22xx） ====================
     APPROVER_RESOLVE_EMPTY(2200, "审批人解析结果为空"),
