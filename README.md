@@ -4,6 +4,8 @@
 
 Smart-WorkFlow 是一个面向未来的企业级低代码 OA 平台后端，采用**模块化单体（Modular Monolith）** 架构设计。深度集成 AI Agent 能力，支持动态表单引擎、流程自动化、IoT 设备接入、知识库与 RAG 检索，致力于打造智能化的企业办公协同平台。
 
+> 本仓库是 Smart-WorkFlow 三件套之一。配套前端 [Smart-WorkFlow-Web](https://github.com/Chikaaho/Smart-WorkFlow-Web)、规划知识库 [Smart-WorkFlow-Knowledge](https://github.com/Chikaaho/Smart-WorkFlow-Knowledge)。
+
 ## 技术栈
 
 | 类别 | 技术 | 说明 |
@@ -77,17 +79,23 @@ sw-dependencies
 
 ## 当前完成度
 
-| 模块 | 状态 | 规模 |
+| 模块 | 状态 | 说明 |
 |------|------|------|
-| sw-common | ✅ 完整 | 30 个 Java 文件 — 公共基础设施 |
-| sw-security | ✅ 完整 | 20 个 Java 文件 — 认证鉴权全链路 |
-| sw-biz-system | ✅ 核心就位 | 37 个 Java 文件 — 用户/角色/菜单/部门/字典 CRUD + 登录 |
-| sw-biz-form | ✅ 已封版 | 40 个 Java 文件 + 6 个测试类 — 动态宽表引擎完整实现 |
-| sw-bpm | 🟦 开发中 | 58 个 Java 文件 — BPMN 转换/待办/审批/外部数据源 |
+| sw-common | ✅ 完整 | 31 个 Java 文件 — 公共基础设施 |
+| sw-security | ✅ 完整 | 23 个 Java 文件 — JWT + refresh token 双认证全链路 |
+| sw-biz-system | ✅ 核心就位 | 49 个 Java 文件 — 用户/角色/菜单/部门/字典 CRUD |
+| sw-biz-form | ✅ 已封版 | 47 个 Java 文件 + 7 个测试类 — 动态宽表引擎完整实现 |
+| sw-bpm | 🟦 开发中 | 78 个 Java 文件 — 待办/审批/流程定义/实例监控/流程监控端点 |
 | sw-biz-openapi | ⬜ 骨架 | 仅 package-info |
 | sw-basic-notify | ✅ 就位 | Facade + Controller + Mapper + 测试 + Flyway |
-| 其他 basic 模块 | ⬜ 骨架 | storage/job/iot/knowledge/agent 均为 AutoConfiguration 占位 |
-| Flyway 迁移 | ✅ 14 个版本 | V1–V14，PG + H2 双方言 |
+| sw-basic-storage | ✅ 完整 | 策略模式 + 4 存储提供商（Local/MinIO/COS/Qiniu） |
+| sw-basic-job | ✅ 完整 | Quartz BEAN+FLOW 双类型 + Controller + Facade + 测试 |
+| sw-basic-iot | ⬜ 骨架 | AutoConfiguration 占位 |
+| sw-basic-knowledge | ⬜ 骨架 | AutoConfiguration 占位 |
+| sw-basic-agent | ⬜ 骨架 | AutoConfiguration 占位 |
+| Flyway 迁移 | ✅ 17 个版本 | V1–V17，PG + H2 双方言 |
+
+**测试基线：465 tests / 0 failures / 0 errors**（CONFIRMED 2026-07-28）
 
 ## 设计要点
 
@@ -118,7 +126,7 @@ sw-dependencies
 
 ### 代码规范强约束
 
-详细的模块依赖铁律、表命名规则（`sys_` / `sw_form_` / `sw_bpm_` 等）、动态宽表裸 SQL 安全红线（手写 `deleted` + `tenant_id`）、错误码区间等，参见 [CLAUDE.md](.claude/CLAUDE.md)。
+详细的模块依赖铁律、表命名规则（`sys_` / `sw_form_` / `sw_bpm_` 等）、动态宽表裸 SQL 安全红线（手写 `deleted` + `tenant_id`）、错误码区间等，参见 [system.md](.claude/system.md)。
 
 ## 构建方式
 
