@@ -17,4 +17,11 @@ public class AgentOrchestrationRunReqDTO {
 
     /** 用户输入文本（必填，非空） */
     private String input;
+
+    /**
+     * 会话 id（M07 Step4 F04，nullable = 新建会话）：null 时自动创建
+     * {@code sw_agent_session} 并在响应返回新会话 id；非 null 时消息追加到现有会话，
+     * 会话不存在或跨租户返回 404 语义。
+     */
+    private Long sessionId;
 }

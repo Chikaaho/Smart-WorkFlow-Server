@@ -24,4 +24,10 @@ public class AgentOrchestrationRunRespDTO {
 
     /** 执行耗时（毫秒） */
     private long latencyMs;
+
+    /**
+     * 本次执行使用的会话 id（M07 Step4 F04）：请求未携带时返回新建会话 id，
+     * 携带时原样返回；仅执行成功时设置（失败路径不暴露空会话）。
+     */
+    private Long sessionId;
 }

@@ -82,14 +82,17 @@ public class AgentToolCallbackFactory {
      * @return 工具回调列表（可能为空）
      */
     public List<ToolCallback> buildToolCallbacks(Long tenantId) {
+        // enabled 条件用数字字面量 1（非 Boolean 参数）：H2/PG 下 Boolean 参数与
+        // SMALLINT 列比较不稳定（H2 实测 90110 "SMALLINT and BOOLEAN are not comparable"，
+        // PG 报 operator does not exist: smallint = boolean），M07 Step4 现场实证，见回执 §7
         List<AgentToolInternalConfig> internals = internalMapper.selectList(
                 Wrappers.<AgentToolInternalConfig>lambdaQuery()
-                        .eq(AgentToolInternalConfig::getEnabled, true)
+                        .eq(AgentToolInternalConfig::getEnabled, 1)
                         .eq(tenantId != null, AgentToolInternalConfig::getTenantId, tenantId)
                         .orderByDesc(AgentToolInternalConfig::getId));
         List<AgentToolExternalConfig> externals = externalMapper.selectList(
                 Wrappers.<AgentToolExternalConfig>lambdaQuery()
-                        .eq(AgentToolExternalConfig::getEnabled, true)
+                        .eq(AgentToolExternalConfig::getEnabled, 1)
                         .eq(tenantId != null, AgentToolExternalConfig::getTenantId, tenantId)
                         .orderByDesc(AgentToolExternalConfig::getId));
         List<ToolCallback> callbacks = new ArrayList<>(internals.size() + externals.size());
@@ -126,17 +129,12 @@ public class AgentToolCallbackFactory {
                             + " 实际返回 " + method.getReturnType().getSimpleName());
         }
         return FunctionToolCallback.builder(config.getName(), (String jsonArgs) -> {
-                    try {
-                        return (String) method.invoke(bean, jsonArgs);
-                    } catch (IllegalAccessException e) {
-                        throw new IllegalStateException("内部工具调用失败: " + config.getName(), e);
-                    } catch (InvocationTargetException e) {
-                        // 目标方法真实异常（原因链展开），由框架 ToolExecutionExceptionProcessor
-                        // 转为错误消息回喂 LLM，不中断整个调用
-                        Throwable cause = e.getCause() != null ? e.getCause() : e;
-                        throw new IllegalStateException("内部工具执行失败: " + config.getName()
-                                + " - " + cause.getMessage(), cause);
-                    }
+                    // M07 Step4 F04：lambda 包装计时 + 调用摘要写入 ThreadLocal 载体
+                    // （未绑定记录列表时跳过，行为与 Step3 完全一致）
+                    long start = System.currentTimeMillis();
+                    String result = invokeInternal(bean, method, config.getName(), jsonArgs);
+                    recordToolCall(config.getName(), jsonArgs, result, System.currentTimeMillis() - start);
+                    return result;
                 })
                 .description(config.getDescription())
                 // 实测（回执 §3.4）：inputSchema(null) 不 NPE，回退由 inputType 生成 {"type":"string"}
@@ -168,17 +166,48 @@ public class AgentToolCallbackFactory {
         String url = config.getUrl();
         return FunctionToolCallback.builder(config.getName(), (String jsonArgs) -> {
                     // 实测（回执 §3.5）：GET 携带 body 不报错（SimpleClientHttpRequestFactory 忽略），
-                    // 因此统一携带 body，无需按方法分支
-                    return restClient.method(httpMethod)
+                    // 因此统一携带 body，无需按方法分支；M07 Step4 F04：lambda 包装计时 + 记录
+                    long start = System.currentTimeMillis();
+                    String result = restClient.method(httpMethod)
                             .uri(url)
                             .contentType(MediaType.APPLICATION_JSON)
                             .body(jsonArgs)
                             .retrieve()
                             .body(String.class);
+                    recordToolCall(config.getName(), jsonArgs, result, System.currentTimeMillis() - start);
+                    return result;
                 })
                 .description(config.getDescription())
                 .inputSchema(config.getInputSchema())
                 .inputType(String.class)
                 .build();
+    }
+
+    /**
+     * 反射调用内部工具方法（异常语义与 Step3 一致：目标方法异常经原因链展开为
+     * IllegalStateException，由框架 ToolExecutionExceptionProcessor 转为错误消息回喂 LLM）。
+     */
+    private String invokeInternal(Object bean, Method method, String toolName, String jsonArgs) {
+        try {
+            return (String) method.invoke(bean, jsonArgs);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("内部工具调用失败: " + toolName, e);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new IllegalStateException("内部工具执行失败: " + toolName
+                    + " - " + cause.getMessage(), cause);
+        }
+    }
+
+    /**
+     * 将一次成功的工具调用摘要写入 {@link AgentGraphFactory#TOOL_CALL_RECORDS_BINDING}
+     * （M07 Step4 F04）。未绑定记录列表（编排未走 ServiceImpl 绑定路径）时跳过——不抛异常、
+     * 不记录，保持 Step3 行为完全一致。
+     */
+    private void recordToolCall(String toolName, String args, String result, long latencyMs) {
+        List<ToolCallRecord> records = AgentGraphFactory.TOOL_CALL_RECORDS_BINDING.get();
+        if (records != null) {
+            records.add(new ToolCallRecord(toolName, args, result, latencyMs));
+        }
     }
 }

@@ -205,6 +205,58 @@ class AgentToolConfigServiceImplTest {
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_model_name ON sw_agent_model_config (tenant_id, name)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_internal_tenant_deleted ON sw_agent_tool_internal (tenant_id, deleted)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_external_tenant_deleted ON sw_agent_tool_external (tenant_id, deleted)");
+        // M07 Step4 F04：V21/V22/V23 H2 脚本 DDL（用例 7 端到端 run() 需写会话/消息/工具日志）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_session (
+                    id                    BIGINT NOT NULL PRIMARY KEY,
+                    agent_model_config_id BIGINT NOT NULL,
+                    title                 VARCHAR(500),
+                    status                VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+                    create_time           TIMESTAMP NOT NULL,
+                    create_by             VARCHAR(64),
+                    update_time           TIMESTAMP,
+                    update_by             VARCHAR(64),
+                    deleted               SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id             BIGINT NOT NULL DEFAULT 0,
+                    version               BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_message (
+                    id          BIGINT NOT NULL PRIMARY KEY,
+                    session_id  BIGINT NOT NULL,
+                    role        VARCHAR(20) NOT NULL,
+                    content     CLOB NOT NULL,
+                    msg_order   INT NOT NULL,
+                    create_time TIMESTAMP NOT NULL,
+                    create_by   VARCHAR(64),
+                    update_time TIMESTAMP,
+                    update_by   VARCHAR(64),
+                    deleted     SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id   BIGINT NOT NULL DEFAULT 0,
+                    version     BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_tool_call_log (
+                    id               BIGINT NOT NULL PRIMARY KEY,
+                    session_id       BIGINT NOT NULL,
+                    tool_name        VARCHAR(100) NOT NULL,
+                    tool_call_args   CLOB,
+                    tool_call_result CLOB,
+                    latency_ms       BIGINT,
+                    create_time      TIMESTAMP NOT NULL,
+                    create_by        VARCHAR(64),
+                    update_time      TIMESTAMP,
+                    update_by        VARCHAR(64),
+                    deleted          SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id        BIGINT NOT NULL DEFAULT 0,
+                    version          BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_session_user ON sw_agent_session (tenant_id, create_by, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_msg_session ON sw_agent_message (session_id, msg_order, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tcl_session ON sw_agent_tool_call_log (session_id, deleted)");
     }
 
     @BeforeEach
@@ -212,6 +264,9 @@ class AgentToolConfigServiceImplTest {
         jdbcTemplate.update("DELETE FROM sw_agent_tool_internal");
         jdbcTemplate.update("DELETE FROM sw_agent_tool_external");
         jdbcTemplate.update("DELETE FROM sw_agent_model_config");
+        jdbcTemplate.update("DELETE FROM sw_agent_message");
+        jdbcTemplate.update("DELETE FROM sw_agent_tool_call_log");
+        jdbcTemplate.update("DELETE FROM sw_agent_session");
         setLoginUser(TENANT_100, USER_1);
     }
 

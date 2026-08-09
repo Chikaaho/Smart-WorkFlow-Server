@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -251,6 +252,43 @@ class AgentToolCallbackFactoryTest {
             AgentGraphFactory.clearChatModel();
         }
         assertThat(plainStub.capturedPrompt.getOptions()).isNull();
+    }
+
+    // ==================== 用例 6：M07 Step4 F04 工具调用记录捕获 ====================
+
+    @Test
+    @DisplayName("用例6: 绑定 TOOL_CALL_RECORDS_BINDING 后调用回调，ToolCallRecord（name/args/result/latencyMs）被捕获；未绑定时调用不抛异常")
+    void toolCallRecord_shouldBeCapturedWhenBound() {
+        AgentToolInternalConfig config = internalConfig("sum_tool", "求和工具",
+                null, "echoToolBean", "execute");
+        AgentToolInternalConfigMapper internalMapper = mock(AgentToolInternalConfigMapper.class);
+        when(internalMapper.selectList(any())).thenReturn(List.of(config));
+        AgentToolExternalConfigMapper externalMapper = mock(AgentToolExternalConfigMapper.class);
+        when(externalMapper.selectList(any())).thenReturn(List.of());
+        ApplicationContext ctx = mock(ApplicationContext.class);
+        when(ctx.getBean("echoToolBean")).thenReturn(new EchoToolBean());
+        ToolCallback cb = new AgentToolCallbackFactory(internalMapper, externalMapper, ctx)
+                .buildToolCallbacks(100L).get(0);
+
+        // 绑定记录载体（ServiceImpl invoke 前同款）→ 调用被包装计时并捕获
+        List<ToolCallRecord> records = new ArrayList<>();
+        AgentGraphFactory.bindToolCallRecords(records);
+        try {
+            String result = cb.call("\"hello\"");
+            assertThat(result).contains("echo:");
+            assertThat(records).hasSize(1);
+            ToolCallRecord record = records.get(0);
+            assertThat(record.getToolName()).isEqualTo("sum_tool");
+            // 实测：lambda 收到的是 arguments（JSON 字符串字面量）反序列化后的纯字符串
+            assertThat(record.getArgs()).isEqualTo("hello");
+            assertThat(record.getResult()).contains("echo:");
+            assertThat(record.getLatencyMs()).isGreaterThanOrEqualTo(0);
+        } finally {
+            AgentGraphFactory.clearToolCallRecords();
+        }
+
+        // 未绑定（Step3 行为）：调用不抛异常、不产生记录
+        assertThat(cb.call("\"world\"")).contains("echo:");
     }
 
     // ==================== 测试数据工厂 ====================

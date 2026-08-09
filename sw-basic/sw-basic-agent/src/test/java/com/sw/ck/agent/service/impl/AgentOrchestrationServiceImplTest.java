@@ -7,11 +7,22 @@ import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInt
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.sw.ck.agent.dto.AgentOrchestrationRunReqDTO;
 import com.sw.ck.agent.dto.AgentOrchestrationRunRespDTO;
+import com.sw.ck.agent.entity.AgentMessage;
 import com.sw.ck.agent.entity.AgentModelConfig;
+import com.sw.ck.agent.entity.AgentSession;
+import com.sw.ck.agent.entity.AgentToolCallLog;
+import com.sw.ck.agent.entity.tool.AgentToolInternalConfig;
+import com.sw.ck.agent.mapper.AgentMessageMapper;
 import com.sw.ck.agent.mapper.AgentModelConfigMapper;
+import com.sw.ck.agent.mapper.AgentSessionMapper;
+import com.sw.ck.agent.mapper.AgentToolCallLogMapper;
+import com.sw.ck.agent.mapper.tool.AgentToolExternalConfigMapper;
+import com.sw.ck.agent.mapper.tool.AgentToolInternalConfigMapper;
 import com.sw.ck.agent.orchestration.AgentGraphFactory;
+import com.sw.ck.agent.orchestration.AgentToolCallbackFactory;
 import com.sw.ck.agent.orchestration.ChatModelFactory;
 import com.sw.ck.agent.service.AgentOrchestrationService;
 import com.sw.ck.common.config.mybatis.CommonMetaObjectHandler;
@@ -35,9 +46,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -53,7 +70,11 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -97,6 +118,21 @@ class AgentOrchestrationServiceImplTest {
     private AgentModelConfigMapper mapper;
 
     @Autowired
+    private AgentSessionMapper sessionMapper;
+
+    @Autowired
+    private AgentMessageMapper messageMapper;
+
+    @Autowired
+    private AgentToolCallLogMapper toolCallLogMapper;
+
+    @Autowired
+    private AgentToolInternalConfigMapper toolInternalMapper;
+
+    @Autowired
+    private CompiledGraph<AgentState> agentCompiledGraph;
+
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     @Autowired
@@ -132,11 +168,111 @@ class AgentOrchestrationServiceImplTest {
                 """);
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_model_name ON sw_agent_model_config (tenant_id, name)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_tenant_deleted ON sw_agent_model_config (tenant_id, deleted)");
+        // M07 Step4 F04：V21/V22/V23 H2 脚本 DDL（会话主表 + 消息明细 + 工具调用日志）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_session (
+                    id                    BIGINT NOT NULL PRIMARY KEY,
+                    agent_model_config_id BIGINT NOT NULL,
+                    title                 VARCHAR(500),
+                    status                VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+                    create_time           TIMESTAMP NOT NULL,
+                    create_by             VARCHAR(64),
+                    update_time           TIMESTAMP,
+                    update_by             VARCHAR(64),
+                    deleted               SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id             BIGINT NOT NULL DEFAULT 0,
+                    version               BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_message (
+                    id          BIGINT NOT NULL PRIMARY KEY,
+                    session_id  BIGINT NOT NULL,
+                    role        VARCHAR(20) NOT NULL,
+                    content     CLOB NOT NULL,
+                    msg_order   INT NOT NULL,
+                    create_time TIMESTAMP NOT NULL,
+                    create_by   VARCHAR(64),
+                    update_time TIMESTAMP,
+                    update_by   VARCHAR(64),
+                    deleted     SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id   BIGINT NOT NULL DEFAULT 0,
+                    version     BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_tool_call_log (
+                    id               BIGINT NOT NULL PRIMARY KEY,
+                    session_id       BIGINT NOT NULL,
+                    tool_name        VARCHAR(100) NOT NULL,
+                    tool_call_args   CLOB,
+                    tool_call_result CLOB,
+                    latency_ms       BIGINT,
+                    create_time      TIMESTAMP NOT NULL,
+                    create_by        VARCHAR(64),
+                    update_time      TIMESTAMP,
+                    update_by        VARCHAR(64),
+                    deleted          SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id        BIGINT NOT NULL DEFAULT 0,
+                    version          BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_session_user ON sw_agent_session (tenant_id, create_by, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_msg_session ON sw_agent_message (session_id, msg_order, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tcl_session ON sw_agent_tool_call_log (session_id, deleted)");
+        // V20 H2 脚本 DDL（用例 8 端到端 tool_calls 需要内部工具白名单表）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_tool_internal (
+                    id              BIGINT NOT NULL PRIMARY KEY,
+                    name            VARCHAR(100) NOT NULL,
+                    description     VARCHAR(500) NOT NULL,
+                    input_schema    CLOB,
+                    bean_name       VARCHAR(100) NOT NULL,
+                    method_name     VARCHAR(100) NOT NULL,
+                    enabled         SMALLINT NOT NULL DEFAULT 1,
+                    remark          VARCHAR(500),
+                    create_time     TIMESTAMP,
+                    create_by       VARCHAR(64),
+                    update_time     TIMESTAMP,
+                    update_by       VARCHAR(64),
+                    deleted         SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id       BIGINT NOT NULL DEFAULT 0,
+                    version         BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_internal_tenant_deleted ON sw_agent_tool_internal (tenant_id, deleted)");
+        // V20 外部工具白名单表（AgentToolCallbackFactory.buildToolCallbacks 同时查询两张表）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_tool_external (
+                    id              BIGINT NOT NULL PRIMARY KEY,
+                    name            VARCHAR(100) NOT NULL,
+                    description     VARCHAR(500) NOT NULL,
+                    input_schema    CLOB,
+                    url             VARCHAR(500) NOT NULL,
+                    http_method     VARCHAR(10) NOT NULL DEFAULT 'POST',
+                    timeout_seconds INT NOT NULL DEFAULT 30,
+                    enabled         SMALLINT NOT NULL DEFAULT 1,
+                    remark          VARCHAR(500),
+                    create_time     TIMESTAMP,
+                    create_by       VARCHAR(64),
+                    update_time     TIMESTAMP,
+                    update_by       VARCHAR(64),
+                    deleted         SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id       BIGINT NOT NULL DEFAULT 0,
+                    version         BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_external_tenant_deleted ON sw_agent_tool_external (tenant_id, deleted)");
     }
 
     @BeforeEach
     void setUp() {
         jdbcTemplate.update("DELETE FROM sw_agent_model_config");
+        jdbcTemplate.update("DELETE FROM sw_agent_message");
+        jdbcTemplate.update("DELETE FROM sw_agent_tool_call_log");
+        jdbcTemplate.update("DELETE FROM sw_agent_session");
+        jdbcTemplate.update("DELETE FROM sw_agent_tool_internal");
+        jdbcTemplate.update("DELETE FROM sw_agent_tool_external");
         setLoginUser(TENANT_100, USER_1);
     }
 
@@ -209,6 +345,185 @@ class AgentOrchestrationServiceImplTest {
         assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
     }
 
+    // ==================== 用例 4-7：M07 Step4 F04 会话持久化 ====================
+
+    @Test
+    @DisplayName("用例4: sessionId=null 时 run() 自动创建 sw_agent_session，resp.sessionId 非空且 DB 可查回")
+    void run_withoutSessionId_shouldCreateSession() throws Exception {
+        HttpServer server = startChatServer();
+        try {
+            Long id = insertConfig("openai", "http://127.0.0.1:" + server.getAddress().getPort(), TEST_API_KEY);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(id, "你好"));
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getSessionId()).isNotNull();
+            AgentSession session = sessionMapper.selectById(resp.getSessionId());
+            assertThat(session).isNotNull();
+            assertThat(session.getStatus()).isEqualTo("ACTIVE");
+            assertThat(session.getAgentModelConfigId()).isEqualTo(id);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例5: 携带已有 sessionId 时 run() 不新建会话，消息追加到现有会话")
+    void run_withExistingSession_shouldReuse() throws Exception {
+        HttpServer server = startChatServer();
+        try {
+            Long id = insertConfig("openai", "http://127.0.0.1:" + server.getAddress().getPort(), TEST_API_KEY);
+            AgentSession session = new AgentSession();
+            session.setAgentModelConfigId(id);
+            session.setStatus("ACTIVE");
+            sessionMapper.insert(session);
+
+            AgentOrchestrationRunReqDTO req = req(id, "续聊");
+            req.setSessionId(session.getId());
+            AgentOrchestrationRunRespDTO resp = service.run(req);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getSessionId()).isEqualTo(session.getId());
+            // 会话数不变（不新建）
+            assertThat(sessionMapper.selectCount(Wrappers.lambdaQuery())).isEqualTo(1);
+            // 消息追加到现有会话
+            assertThat(messageMapper.selectCount(
+                    Wrappers.<AgentMessage>lambdaQuery()
+                            .eq(AgentMessage::getSessionId, session.getId()))).isEqualTo(2);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例6: run() 成功后持久化 USER + ASSISTANT 两行，role 精确、msg_order 为 0/1")
+    void run_shouldPersistUserAndAssistantMessages() throws Exception {
+        HttpServer server = startChatServer();
+        try {
+            Long id = insertConfig("openai", "http://127.0.0.1:" + server.getAddress().getPort(), TEST_API_KEY);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(id, "第一轮"));
+
+            assertThat(resp.isSuccess()).isTrue();
+            List<AgentMessage> messages = messageMapper.selectList(
+                    Wrappers.<AgentMessage>lambdaQuery()
+                            .eq(AgentMessage::getSessionId, resp.getSessionId())
+                            .orderByAsc(AgentMessage::getMsgOrder));
+            assertThat(messages).hasSize(2);
+            assertThat(messages).extracting(AgentMessage::getRole).containsExactly("USER", "ASSISTANT");
+            assertThat(messages).extracting(AgentMessage::getMsgOrder).containsExactly(0, 1);
+            assertThat(messages.get(0).getContent()).isEqualTo("第一轮");
+            assertThat(messages.get(1).getContent()).isEqualTo("你好，mock 回复");
+
+            // 第二轮 → msg_order 单调递增（2/3），历史注入顺序正确
+            AgentOrchestrationRunRespDTO resp2 = service.run(reqWithSession(id, "第二轮", resp.getSessionId()));
+            assertThat(resp2.isSuccess()).isTrue();
+            List<AgentMessage> messages2 = messageMapper.selectList(
+                    Wrappers.<AgentMessage>lambdaQuery()
+                            .eq(AgentMessage::getSessionId, resp.getSessionId())
+                            .orderByAsc(AgentMessage::getMsgOrder));
+            assertThat(messages2).extracting(AgentMessage::getMsgOrder).containsExactly(0, 1, 2, 3);
+            assertThat(messages2).extracting(AgentMessage::getRole)
+                    .containsExactly("USER", "ASSISTANT", "USER", "ASSISTANT");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例7: 模型不可达（invoke 抛异常）后 historyMessages/tools ThreadLocal 均被清除（泄漏检查）")
+    void run_failure_shouldClearThreadLocals() throws Exception {
+        int unusedPort = findUnusedPort();
+        Long id = insertConfig("openai", "http://127.0.0.1:" + unusedPort, TEST_API_KEY);
+
+        AgentOrchestrationRunRespDTO resp = service.run(req(id, "hello"));
+        assertThat(resp.isSuccess()).isFalse();
+        assertThat(resp.getErrorMessage()).isNotBlank();
+
+        // 泄漏检查：直接 invoke 图（不绑定历史/工具）——若 clearHistoryMessages/clearTools
+        // 未执行，callModel 收到的 Prompt 会包含泄漏的历史消息或 ToolCallingChatOptions
+        CapturingChatModel stub = new CapturingChatModel("leak-check");
+        AgentGraphFactory.bindChatModel(stub);
+        try {
+            Optional<AgentState> result = agentCompiledGraph.invoke(
+                    Map.of("input", "leak-check", "chatModel", stub));
+            assertThat(result).isPresent();
+            assertThat(stub.capturedPrompt.getInstructions())
+                    .as("run() 失败后历史消息不得残留在 ThreadLocal（bind/clear 对称）")
+                    .hasSize(1);
+            assertThat(stub.capturedPrompt.getOptions()).isNull();
+        } finally {
+            AgentGraphFactory.clearChatModel();
+        }
+    }
+
+    // ==================== 用例 8：端到端 tool_calls → 工具执行 → 日志落库 ====================
+
+    @Test
+    @DisplayName("用例8: LLM 返回 tool_calls 时内部工具真实执行，sw_agent_tool_call_log 增加一行（args/result 非空）")
+    void run_withToolCalls_shouldPersistToolCallLog() throws Exception {
+        // 按请求内容判定的 mock server：请求体含 role=tool 消息（loop 带回工具结果）→ 返回最终文本，
+        // 否则返回 tool_calls（arguments 为 JSON 字符串字面量，inputType=String 约定，回执 §3.4 实测）。
+        // 基于内容而非调用计数：即使框架层出现重试/乱序，响应语义始终自洽（见 §7 问题 3）。
+        final AtomicInteger callCount = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            String reqBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String json;
+            if (reqBody.contains("\"role\":\"tool\"")) {
+                json = "{\"id\":\"chatcmpl-tool-2\",\"object\":\"chat.completion\",\"created\":1720000000,"
+                        + "\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+                        + "\"content\":\"工具执行完成\"},\"finish_reason\":\"stop\"}],"
+                        + "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}";
+            } else {
+                json = "{\"id\":\"chatcmpl-tool-1\",\"object\":\"chat.completion\",\"created\":1720000000,"
+                        + "\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+                        + "\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\","
+                        + "\"function\":{\"name\":\"echo_tool\",\"arguments\":\"\\\"你好\\\"\"}}]},"
+                        + "\"finish_reason\":\"tool_calls\"}],"
+                        + "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}";
+            }
+            callCount.incrementAndGet();
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            Long id = insertConfig("openai", "http://127.0.0.1:" + server.getAddress().getPort(), TEST_API_KEY);
+            // 白名单内部工具（echo_tool → echoToolBean.execute）
+            AgentToolInternalConfig tool = new AgentToolInternalConfig();
+            tool.setName("echo_tool");
+            tool.setDescription("回声工具");
+            tool.setBeanName("echoToolBean");
+            tool.setMethodName("execute");
+            tool.setEnabled(true);
+            toolInternalMapper.insert(tool);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(id, "调用工具"));
+
+            assertThat(resp.isSuccess())
+                    .withFailMessage("run 失败 errorMessage=%s", resp.getErrorMessage())
+                    .isTrue();
+            assertThat(resp.getOutput()).isEqualTo("工具执行完成");
+            assertThat(callCount.get()).isGreaterThanOrEqualTo(2);
+            // 工具调用日志落库：args/result 非空
+            List<AgentToolCallLog> logs = toolCallLogMapper.selectList(
+                    Wrappers.<AgentToolCallLog>lambdaQuery()
+                            .eq(AgentToolCallLog::getSessionId, resp.getSessionId()));
+            assertThat(logs).hasSize(1);
+            assertThat(logs.get(0).getToolName()).isEqualTo("echo_tool");
+            // 实测：落库的 args 是 arguments（JSON 字符串字面量）反序列化后的纯字符串
+            assertThat(logs.get(0).getToolCallArgs()).isEqualTo("你好");
+            assertThat(logs.get(0).getToolCallResult()).isEqualTo("echo:你好");
+            assertThat(logs.get(0).getLatencyMs()).isGreaterThanOrEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     // ==================== 测试数据工厂 ====================
 
     private AgentOrchestrationRunReqDTO req(Long id, String input) {
@@ -216,6 +531,28 @@ class AgentOrchestrationServiceImplTest {
         req.setAgentModelConfigId(id);
         req.setInput(input);
         return req;
+    }
+
+    private AgentOrchestrationRunReqDTO reqWithSession(Long id, String input, Long sessionId) {
+        AgentOrchestrationRunReqDTO req = req(id, input);
+        req.setSessionId(sessionId);
+        return req;
+    }
+
+    /** 记录收到的 Prompt 的 ChatModel 桩（ThreadLocal 泄漏检查用） */
+    static class CapturingChatModel implements ChatModel {
+        private final String reply;
+        Prompt capturedPrompt;
+
+        CapturingChatModel(String reply) {
+            this.reply = reply;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            this.capturedPrompt = prompt;
+            return new ChatResponse(List.of(new Generation(new AssistantMessage(reply))));
+        }
     }
 
     private Long insertConfig(String protocol, String baseUrl, String apiKey) {
@@ -398,6 +735,23 @@ class AgentOrchestrationServiceImplTest {
             return new AgentGraphFactory().buildGraph();
         }
 
+        // ==================== M07 Step4 F04 工具链 Bean（用例 8 端到端 tool_calls） ====================
+
+        /** 白名单内部工具测试 bean（bean 名 = 方法名 echoToolBean） */
+        @Bean
+        public EchoToolBean echoToolBean() {
+            return new EchoToolBean();
+        }
+
+        @Bean
+        public AgentToolCallbackFactory agentToolCallbackFactory(
+                AgentToolInternalConfigMapper agentToolInternalConfigMapper,
+                AgentToolExternalConfigMapper agentToolExternalConfigMapper,
+                ApplicationContext applicationContext) {
+            return new AgentToolCallbackFactory(
+                    agentToolInternalConfigMapper, agentToolExternalConfigMapper, applicationContext);
+        }
+
         @Bean
         public AgentOrchestrationService agentOrchestrationService(
                 AgentModelConfigMapper agentModelConfigMapper,
@@ -406,6 +760,13 @@ class AgentOrchestrationServiceImplTest {
                 CompiledGraph<AgentState> agentCompiledGraph) {
             return new AgentOrchestrationServiceImpl(
                     agentModelConfigMapper, aesGcmCipher, chatModelFactory, agentCompiledGraph);
+        }
+    }
+
+    /** 白名单内部工具 mock bean：约定签名 String execute(String params) */
+    public static class EchoToolBean {
+        public String execute(String params) {
+            return "echo:" + params;
         }
     }
 }

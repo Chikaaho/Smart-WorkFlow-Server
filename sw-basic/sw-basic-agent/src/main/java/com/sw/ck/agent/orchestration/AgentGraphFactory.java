@@ -8,6 +8,8 @@ import org.bsc.langgraph4j.serializer.StateSerializer;
 import org.bsc.langgraph4j.state.AgentState;
 import org.bsc.langgraph4j.state.Channel;
 import org.bsc.langgraph4j.state.Channels;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -17,6 +19,7 @@ import org.springframework.ai.tool.ToolCallback;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +64,23 @@ public class AgentGraphFactory {
      */
     private static final ThreadLocal<List<ToolCallback>> TOOL_CALLBACKS_BINDING = new ThreadLocal<>();
 
+    /**
+     * 当前执行线程绑定的历史消息（M07 Step4 F04 多轮会话）。callModel 节点读取后与
+     * 本轮新 {@link UserMessage} 合并构造 Prompt，LLM 获得多轮上下文。与 ChatModel
+     * 同款 ThreadLocal 生命周期：调用方 invoke 前 {@link #bindHistoryMessages}、
+     * finally 中 {@link #clearHistoryMessages}。历史消息不经 graph state
+     * （SparseStateSerializer 不序列化），与 tools ThreadLocal 同一模式。
+     */
+    private static final ThreadLocal<List<Message>> HISTORY_MESSAGES_BINDING = new ThreadLocal<>();
+
+    /**
+     * 当前执行线程绑定的工具调用记录载体（M07 Step4 F04）。{@link AgentToolCallbackFactory}
+     * 的工具 lambda 包装在每次实际调用后向该列表追加 {@link ToolCallRecord}（未绑定时
+     * 跳过，不影响 Step3 行为）；编排 ServiceImpl 在 invoke 后读取并逐条落库。
+     * package-private：仅同包 AgentToolCallbackFactory 写入（lambda 包装点）。
+     */
+    static final ThreadLocal<List<ToolCallRecord>> TOOL_CALL_RECORDS_BINDING = new ThreadLocal<>();
+
     /** 绑定本次执行的 ChatModel（invoke 前调用） */
     public static void bindChatModel(ChatModel chatModel) {
         CHAT_MODEL_BINDING.set(chatModel);
@@ -79,6 +99,31 @@ public class AgentGraphFactory {
     /** 清除本次执行的工具回调绑定（invoke 结束后 finally 调用，防 ThreadLocal 泄漏） */
     public static void clearTools() {
         TOOL_CALLBACKS_BINDING.remove();
+    }
+
+    /** 绑定本次执行的历史消息（invoke 前调用；null/空列表时 callModel 行为与 Step2/3 一致） */
+    public static void bindHistoryMessages(List<Message> messages) {
+        HISTORY_MESSAGES_BINDING.set(messages);
+    }
+
+    /** 清除本次执行的历史消息绑定（invoke 结束后 finally 调用，防 ThreadLocal 泄漏） */
+    public static void clearHistoryMessages() {
+        HISTORY_MESSAGES_BINDING.remove();
+    }
+
+    /** 绑定工具调用记录载体（invoke 前调用，由 ServiceImpl 传入空列表） */
+    public static void bindToolCallRecords(List<ToolCallRecord> records) {
+        TOOL_CALL_RECORDS_BINDING.set(records);
+    }
+
+    /** 清除工具调用记录载体（invoke 结束后 finally 调用） */
+    public static void clearToolCallRecords() {
+        TOOL_CALL_RECORDS_BINDING.remove();
+    }
+
+    /** 读取本次执行捕获的工具调用记录（ServiceImpl 在 invoke 后调用；未绑定返回 null） */
+    public static List<ToolCallRecord> getToolCallRecords() {
+        return TOOL_CALL_RECORDS_BINDING.get();
     }
 
     /**
@@ -118,6 +163,15 @@ public class AgentGraphFactory {
         String input = (String) state.value("input")
                 .orElseThrow(() -> new IllegalStateException("初始状态缺少 input"));
         List<ToolCallback> tools = TOOL_CALLBACKS_BINDING.get();
+        // M07 Step4 F04：历史消息（ThreadLocal 注入） + 本轮新 UserMessage 构造完整消息列表。
+        // 历史为空/null 时 messages 仅含新 UserMessage——与 Step2/3 的 new Prompt(input)
+        // 语义等价（Prompt(String) 内部即 new Prompt(UserMessage(input))），向后兼容。
+        List<Message> history = HISTORY_MESSAGES_BINDING.get();
+        List<Message> messages = new ArrayList<>();
+        if (history != null) {
+            messages.addAll(history);
+        }
+        messages.add(new UserMessage(input));
         Prompt prompt;
         if (tools != null && !tools.isEmpty()) {
             // internalToolExecutionEnabled 未显式设置时默认 true（§9.2 实测
@@ -126,9 +180,9 @@ public class AgentGraphFactory {
             ToolCallingChatOptions options = ToolCallingChatOptions.builder()
                     .toolCallbacks(tools)
                     .build();
-            prompt = new Prompt(input, options);
+            prompt = new Prompt(messages, options);
         } else {
-            prompt = new Prompt(input);
+            prompt = new Prompt(messages);
         }
         ChatResponse response = chatModel.call(prompt);
         String output = response.getResult().getOutput().getText();
