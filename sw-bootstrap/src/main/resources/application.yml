@@ -57,6 +57,7 @@ spring:
       - classpath:db/migration/form/{vendor}
       - classpath:db/migration/storage/{vendor}
       - classpath:db/migration/job/{vendor}
+      - classpath:db/migration/agent/{vendor}
     baseline-on-migrate: true
     validate-on-migrate: true
     out-of-order: false
@@ -125,6 +126,11 @@ sw:
     enabled: true
     pool-size: 10
     log-retention-days: 30
+
+  # ---------- AI 智能体（大模型接入配置管理） ----------
+  agent:
+    enabled: true
+    cipher-key: ${SW_CIPHER_KEY:}                                        # AES-256-GCM 密钥（Base64），与 sw.external-datasource.cipher-key 同构共享
 
   # ---------- 多租户（列级隔离） ----------
   tenant:
