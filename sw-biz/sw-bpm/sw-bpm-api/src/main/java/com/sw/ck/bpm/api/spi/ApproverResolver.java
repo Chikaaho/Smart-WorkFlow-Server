@@ -5,7 +5,7 @@ import com.sw.ck.bpm.api.dto.ApproverContext;
 /**
  * 审批人解析 SPI。
  * <p>
- * 定义在 <code>sw-bpm-api</code>（CLAUDE.md §1 跨模块通信），
+ * 定义在 <code>sw-bpm-api</code>（system.md §1 跨模块通信），
  * 各实现（固定审批人、角色、岗位、主管、上级、字段匹配、自选等）注册于
  * <code>sw-bpm-process</code>，经 Spring 注入调用。
  * </p>

@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * 节点审批人解析 SPI —— 供 TaskListener 运行时分配审批人。
  * <p>
- * 定义在 {@code sw-bpm-api}（CLAUDE.md §1 跨模块通信），
+ * 定义在 {@code sw-bpm-api}（system.md §1 跨模块通信），
  * 各实现（固定审批人、角色、脚本等）注册于 {@code sw-bpm-engine}，
  * 经 {@code Map<String, NodeApproverResolver>} 按 {@link NodeApproverType} 分发。
  * </p>

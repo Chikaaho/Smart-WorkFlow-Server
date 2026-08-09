@@ -1,6 +1,9 @@
 package com.sw.ck.bpm.process.service;
 
+import com.sw.ck.bpm.process.dto.InstanceFilterDTO;
 import com.sw.ck.bpm.process.entity.BpmInstance;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.service.BaseService;
 
 import java.util.Optional;
@@ -44,4 +47,18 @@ public interface BpmInstanceService extends BaseService<BpmInstance> {
      * @param status            目标状态（{@link com.sw.ck.bpm.process.entity.InstanceStatusEnum#getCode()}）
      */
     void updateStatus(String processInstanceId, String status);
+
+    /**
+     * 分页查询流程实例列表。
+     * <p>
+     * 支持可选过滤条件：状态、流程定义 key、发起人。
+     * 按创建时间倒序排列（最新的实例在最前）。
+     * 只查当前租户（MyBatis-Plus 拦截器自动注入 tenant_id）。
+     * </p>
+     *
+     * @param pageParam 分页参数（pageNum 从 1 开始，pageSize 为每页条数）
+     * @param filter    过滤条件（所有字段可选，null = 不过滤对应字段）
+     * @return 分页结果（records 为 BpmInstance 列表）
+     */
+    PageResult<BpmInstance> pageInstances(PageParam pageParam, InstanceFilterDTO filter);
 }
