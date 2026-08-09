@@ -10,7 +10,7 @@ import java.util.*;
 /**
  * 动态宽表运行时 DDL 管理器。
  * <p>
- * 负责按表单定义在运行时建表/加列，不归 Flyway 管理（CLAUDE.md §6.2 唯一例外）。
+ * 负责按表单定义在运行时建表/加列，不归 Flyway 管理（system.md §6.2 唯一例外）。
  * 仅依赖 {@link JdbcTemplate}，不引入 Hibernate DDL 或 JPA。
  * </p>
  *

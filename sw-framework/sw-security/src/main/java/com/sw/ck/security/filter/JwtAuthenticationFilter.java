@@ -34,7 +34,7 @@ import java.util.List;
  * 本过滤器不再有「loader 为 null 则整段跳过」的早退逻辑——那曾把「安全链未装配」这一启动期
  * 缺陷静默降级为对所有请求 401，掩盖了根因。
  * <p>
- * 异常分档（CLAUDE.md §8：令牌失败=401 vs 基础设施/装配故障=500/503，不得统一降级）：
+ * 异常分档（system.md §8：令牌失败=401 vs 基础设施/装配故障=500/503，不得统一降级）：
  * 仅 token 自身的解析/校验失败在此 catch 并降级为「未认证」，交由 authorizeHttpRequests +
  * {@code AuthenticationEntryPoint} 统一吐 401；而 {@code loadByUserId} 内部因
  * {@code UserDetailsProvider} 缺失（装配故障）或 Redis/回查异常（基础设施故障）抛出的异常
@@ -77,7 +77,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
         // loadByUserId 内部若因 UserDetailsProvider 缺失（装配故障）或 Redis/回查异常（基础设施
-        // 故障）抛出，【刻意不在此 catch】——任其向上传播渲染为 5xx，绝不降级为 401（CLAUDE.md §8）。
+        // 故障）抛出，【刻意不在此 catch】——任其向上传播渲染为 5xx，绝不降级为 401（system.md §8）。
         LoginUser loginUser = loginUserLoader.loadByUserId(userId);
         if (loginUser == null) {
             return;

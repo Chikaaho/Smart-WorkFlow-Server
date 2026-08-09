@@ -25,7 +25,7 @@ public class GlobalExceptionHandler {
 
     /**
      * 未分类 / 基础设施故障 → HTTP 500 + body 500。
-     * CLAUDE.md §8：基础设施故障必须落 5xx，不得伪装为 200。
+     * system.md §8：基础设施故障必须落 5xx，不得伪装为 200。
      */
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
