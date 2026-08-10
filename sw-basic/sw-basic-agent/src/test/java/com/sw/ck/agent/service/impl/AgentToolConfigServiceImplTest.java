@@ -160,7 +160,11 @@ class AgentToolConfigServiceImplTest {
                     update_by       VARCHAR(64),
                     deleted         SMALLINT NOT NULL DEFAULT 0,
                     tenant_id       BIGINT NOT NULL DEFAULT 0,
-                    version         BIGINT NOT NULL DEFAULT 0
+                    version         BIGINT NOT NULL DEFAULT 0,
+                    group_key       VARCHAR(100),
+                    sort            INT NOT NULL DEFAULT 0,
+                    locked_until    TIMESTAMP,
+                    quota_cooldown_seconds INT NOT NULL DEFAULT 60
                 )
                 """);
         jt.execute("""
@@ -203,6 +207,7 @@ class AgentToolConfigServiceImplTest {
                 )
                 """);
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_model_name ON sw_agent_model_config (tenant_id, name)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_group ON sw_agent_model_config (tenant_id, group_key, sort)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_internal_tenant_deleted ON sw_agent_tool_internal (tenant_id, deleted)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_external_tenant_deleted ON sw_agent_tool_external (tenant_id, deleted)");
         // M07 Step4 F04：V21/V22/V23 H2 脚本 DDL（用例 7 端到端 run() 需写会话/消息/工具日志）

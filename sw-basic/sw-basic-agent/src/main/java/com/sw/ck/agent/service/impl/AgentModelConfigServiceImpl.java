@@ -229,6 +229,10 @@ public class AgentModelConfigServiceImpl
         entity.setRetryCount(req.getRetryCount());
         entity.setEnabled(req.getEnabled());
         entity.setRemark(req.getRemark());
+        // M07-Step5 多Key轮询字段（lockedUntil 为系统运行态，不由用户配置）
+        entity.setGroupKey(req.getGroupKey());
+        entity.setSort(req.getSort());
+        entity.setQuotaCooldownSeconds(req.getQuotaCooldownSeconds());
         return entity;
     }
 
@@ -246,6 +250,11 @@ public class AgentModelConfigServiceImpl
         dto.setRetryCount(entity.getRetryCount());
         dto.setEnabled(entity.getEnabled());
         dto.setRemark(entity.getRemark());
+        // M07-Step5 多Key轮询字段（只读展示，便于运营侧观察哪个 Key 当前被锁定）
+        dto.setGroupKey(entity.getGroupKey());
+        dto.setSort(entity.getSort());
+        dto.setLockedUntil(entity.getLockedUntil());
+        dto.setQuotaCooldownSeconds(entity.getQuotaCooldownSeconds());
         dto.setCreateTime(entity.getCreateTime());
         dto.setUpdateTime(entity.getUpdateTime());
         return dto;

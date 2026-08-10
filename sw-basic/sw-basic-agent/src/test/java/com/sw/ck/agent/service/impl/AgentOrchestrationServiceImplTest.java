@@ -51,29 +51,36 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.HttpClientErrorException;
 
 import javax.sql.DataSource;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -163,11 +170,16 @@ class AgentOrchestrationServiceImplTest {
                     update_by       VARCHAR(64),
                     deleted         SMALLINT NOT NULL DEFAULT 0,
                     tenant_id       BIGINT NOT NULL DEFAULT 0,
-                    version         BIGINT NOT NULL DEFAULT 0
+                    version         BIGINT NOT NULL DEFAULT 0,
+                    group_key       VARCHAR(100),
+                    sort            INT NOT NULL DEFAULT 0,
+                    locked_until    TIMESTAMP,
+                    quota_cooldown_seconds INT NOT NULL DEFAULT 60
                 )
                 """);
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_model_name ON sw_agent_model_config (tenant_id, name)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_tenant_deleted ON sw_agent_model_config (tenant_id, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_group ON sw_agent_model_config (tenant_id, group_key, sort)");
         // M07 Step4 F04：V21/V22/V23 H2 脚本 DDL（会话主表 + 消息明细 + 工具调用日志）
         jt.execute("""
                 CREATE TABLE IF NOT EXISTS sw_agent_session (
@@ -524,6 +536,191 @@ class AgentOrchestrationServiceImplTest {
         }
     }
 
+    // ==================== 用例 9-14：M07-Step5 多Key轮询/额度限流 ====================
+
+    @Test
+    @DisplayName("用例9: 同组高优先级 Key 遇 429 → 锁定并切换到 sort 次之候选 → success=true 且 usedModelConfigId 为第二条")
+    void run_switchesToNextKeyOnQuotaExceeded() throws Exception {
+        AtomicInteger hits429 = new AtomicInteger();
+        HttpServer server429 = start429Server(hits429);
+        HttpServer server200 = startChatServer();
+        try {
+            // 同组 2 条：sort 0 指向 429 服务，sort 1 指向正常服务（retryCount=0 → maxAttempts=1，不重试）
+            Long idA = insertGroupConfig("openai", "http://127.0.0.1:" + server429.getAddress().getPort(),
+                    TEST_API_KEY, "g-switch", 0);
+            Long idB = insertGroupConfig("openai", "http://127.0.0.1:" + server200.getAddress().getPort(),
+                    TEST_API_KEY, "g-switch", 1);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idA, "你好"));
+
+            assertThat(resp.isSuccess())
+                    .withFailMessage("run 失败 errorMessage=%s", resp.getErrorMessage())
+                    .isTrue();
+            assertThat(resp.getOutput()).isEqualTo("你好，mock 回复");
+            // 实际服务本次请求的配置 id 为切换后的第二条
+            assertThat(resp.getUsedModelConfigId()).isEqualTo(idB);
+            // 429 服务恰好被请求 1 次（切换后不再尝试已限流 Key），正常服务恰好 1 次
+            assertThat(hits429.get()).isEqualTo(1);
+        } finally {
+            server429.stop(0);
+            server200.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例10: 限流触发后当前配置 lockedUntil 被持久化为 now + quotaCooldownSeconds")
+    void run_locksCurrentConfigOnQuotaExceeded() throws Exception {
+        AtomicInteger hits429 = new AtomicInteger();
+        HttpServer server429 = start429Server(hits429);
+        HttpServer server200 = startChatServer();
+        try {
+            Long idA = insertGroupConfig("openai", "http://127.0.0.1:" + server429.getAddress().getPort(),
+                    TEST_API_KEY, "g-lock", 0);
+            Long idB = insertGroupConfig("openai", "http://127.0.0.1:" + server200.getAddress().getPort(),
+                    TEST_API_KEY, "g-lock", 1);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idA, "你好"));
+            assertThat(resp.isSuccess()).isTrue();
+
+            LocalDateTime lockedUntil = mapper.selectById(idA).getLockedUntil();
+            assertThat(lockedUntil).as("限流后当前配置必须被锁定").isNotNull();
+            // quotaCooldownSeconds=60 → lockedUntil ≈ now+60s（宽容边界：不早于 now-10s，不晚于 now+70s）
+            assertThat(lockedUntil).isAfter(LocalDateTime.now().minusSeconds(10));
+            assertThat(lockedUntil).isBeforeOrEqualTo(LocalDateTime.now().plusSeconds(70));
+            // 切换到的候选不被锁定
+            assertThat(mapper.selectById(idB).getLockedUntil()).isNull();
+        } finally {
+            server429.stop(0);
+            server200.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例11: 组内候选全部限流 → 每条恰好尝试 1 次后 success=false，无多余重试")
+    void run_failsWhenAllCandidatesExhausted() throws Exception {
+        AtomicInteger hitsA = new AtomicInteger();
+        AtomicInteger hitsB = new AtomicInteger();
+        AtomicInteger hitsC = new AtomicInteger();
+        HttpServer server429a = start429Server(hitsA);
+        HttpServer server429b = start429Server(hitsB);
+        HttpServer server429c = start429Server(hitsC);
+        try {
+            Long idA = insertGroupConfig("openai", "http://127.0.0.1:" + server429a.getAddress().getPort(),
+                    TEST_API_KEY, "g-exhaust", 0);
+            Long idB = insertGroupConfig("openai", "http://127.0.0.1:" + server429b.getAddress().getPort(),
+                    TEST_API_KEY, "g-exhaust", 1);
+            Long idC = insertGroupConfig("openai", "http://127.0.0.1:" + server429c.getAddress().getPort(),
+                    TEST_API_KEY, "g-exhaust", 2);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idA, "你好"));
+
+            assertThat(resp.isSuccess()).isFalse();
+            assertThat(resp.getErrorMessage()).isNotBlank();
+            assertThat(resp.getUsedModelConfigId()).isNull();
+            // 组内 3 条各恰好尝试 1 次（triedIds 去重，无多余重试）
+            assertThat(hitsA.get()).isEqualTo(1);
+            assertThat(hitsB.get()).isEqualTo(1);
+            assertThat(hitsC.get()).isEqualTo(1);
+            // 三条均被锁定
+            assertThat(mapper.selectById(idA).getLockedUntil()).isNotNull();
+            assertThat(mapper.selectById(idB).getLockedUntil()).isNotNull();
+            assertThat(mapper.selectById(idC).getLockedUntil()).isNotNull();
+        } finally {
+            server429a.stop(0);
+            server429b.stop(0);
+            server429c.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例12: groupKey=null 的独立配置遇 429 直接失败，不查询任何候选（向后兼容）")
+    void run_noSwitchWhenGroupKeyNull() throws Exception {
+        AtomicInteger hits429 = new AtomicInteger();
+        AtomicInteger hits200 = new AtomicInteger();
+        HttpServer server429 = start429Server(hits429);
+        HttpServer server200 = startCountingChatServer(hits200);
+        try {
+            // 独立配置（无组）+ 其他组的正常候选：均不得被使用
+            Long idSolo = insertGroupConfig("openai", "http://127.0.0.1:" + server429.getAddress().getPort(),
+                    TEST_API_KEY, null, 0);
+            insertGroupConfig("openai", "http://127.0.0.1:" + server200.getAddress().getPort(),
+                    TEST_API_KEY, "g-other", 0);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idSolo, "你好"));
+
+            assertThat(resp.isSuccess()).isFalse();
+            assertThat(resp.getErrorMessage()).isNotBlank();
+            assertThat(hits429.get()).isEqualTo(1);
+            assertThat(hits200.get()).as("独立配置不得切换到其他组的候选").isZero();
+            // 独立配置也不被锁定（groupKey null 不进入锁定/切换分支）
+            assertThat(mapper.selectById(idSolo).getLockedUntil()).isNull();
+        } finally {
+            server429.stop(0);
+            server200.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例13: 非 429 异常（连接拒绝）不触发候选切换，行为与 Step2-4 一致")
+    void run_noSwitchOnNonQuotaException() throws Exception {
+        int unusedPort = findUnusedPort();
+        AtomicInteger hits200 = new AtomicInteger();
+        HttpServer server200 = startCountingChatServer(hits200);
+        try {
+            // 同组 2 条：sort 0 指向未监听端口（连接拒绝 → 网络异常），sort 1 正常
+            Long idA = insertGroupConfig("openai", "http://127.0.0.1:" + unusedPort,
+                    TEST_API_KEY, "g-nonquota", 0);
+            Long idB = insertGroupConfig("openai", "http://127.0.0.1:" + server200.getAddress().getPort(),
+                    TEST_API_KEY, "g-nonquota", 1);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idA, "你好"));
+
+            assertThat(resp.isSuccess()).isFalse();
+            assertThat(resp.getErrorMessage()).isNotBlank();
+            // 非限流异常：不锁定、不切换
+            assertThat(mapper.selectById(idA).getLockedUntil()).isNull();
+            assertThat(mapper.selectById(idB).getLockedUntil()).isNull();
+            assertThat(hits200.get()).as("非 429 异常不得触发候选切换").isZero();
+        } finally {
+            server200.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例14: isQuotaExceededException 按 V1 实测语义判断 429（NonTransientAiException 消息 + RestClientResponseException 兜底 + 沿 cause 链）")
+    void isQuotaExceededException_detects429() throws Exception {
+        Method m = AgentOrchestrationServiceImpl.class
+                .getDeclaredMethod("isQuotaExceededException", Throwable.class);
+        m.setAccessible(true);
+
+        // V1 实测形态：Spring AI 默认错误处理器对 4xx 直接抛 NonTransientAiException("429 - ...")
+        assertThat(invokeQuotaCheck(m, new NonTransientAiException("429 - too many requests"))).isTrue();
+        // 其他状态码不命中
+        assertThat(invokeQuotaCheck(m, new NonTransientAiException("401 - unauthorized"))).isFalse();
+        assertThat(invokeQuotaCheck(m, new NonTransientAiException("500 - server error"))).isFalse();
+        // 非 Spring AI 异常不命中
+        assertThat(invokeQuotaCheck(m, new IllegalArgumentException("bad config"))).isFalse();
+        // 沿 cause 链穿透包装层（langgraph4j CompletionException 同款）
+        assertThat(invokeQuotaCheck(m,
+                new CompletionException(new NonTransientAiException("429 - too many requests")))).isTrue();
+        // RestClientResponseException 兜底：真实 HttpClientErrorException.TooManyRequests 实例
+        HttpClientErrorException tooMany = HttpClientErrorException.create(
+                HttpStatusCode.valueOf(429), "Too Many Requests",
+                new HttpHeaders(), "too many".getBytes(StandardCharsets.UTF_8), null);
+        assertThat(invokeQuotaCheck(m, tooMany)).isTrue();
+        // 非 429 的 RestClientResponseException 不命中
+        HttpClientErrorException serverError = HttpClientErrorException.create(
+                HttpStatusCode.valueOf(500), "Server Error",
+                new HttpHeaders(), "boom".getBytes(StandardCharsets.UTF_8), null);
+        assertThat(invokeQuotaCheck(m, serverError)).isFalse();
+        // null 不命中
+        assertThat(invokeQuotaCheck(m, null)).isFalse();
+    }
+
+    private boolean invokeQuotaCheck(Method m, Throwable t) throws Exception {
+        return (boolean) m.invoke(service, t);
+    }
+
     // ==================== 测试数据工厂 ====================
 
     private AgentOrchestrationRunReqDTO req(Long id, String input) {
@@ -569,11 +766,35 @@ class AgentOrchestrationServiceImplTest {
         return entity.getId();
     }
 
+    /** 多Key轮询组配置：同 insertConfig + groupKey/sort/quotaCooldownSeconds=60 */
+    private Long insertGroupConfig(String protocol, String baseUrl, String apiKey, String groupKey, int sort) {
+        AgentModelConfig entity = new AgentModelConfig();
+        entity.setName("orch-group-" + System.nanoTime());
+        entity.setProtocolType(protocol);
+        entity.setBaseUrl(baseUrl);
+        entity.setModelName("gpt-4o");
+        entity.setApiKeyCipher(apiKey == null ? null : cipher.encrypt(apiKey));
+        entity.setTimeoutSeconds(10);
+        entity.setRetryCount(0);
+        entity.setEnabled(true);
+        entity.setGroupKey(groupKey);
+        entity.setSort(sort);
+        entity.setQuotaCooldownSeconds(60);
+        mapper.insert(entity);
+        return entity.getId();
+    }
+
     // ==================== 本地假 OpenAI Chat Completions 服务 ====================
 
     private HttpServer startChatServer() throws IOException {
+        return startCountingChatServer(new AtomicInteger());
+    }
+
+    /** 恒 200 Chat Completions 服务（请求计数，多Key轮询用例用） */
+    private HttpServer startCountingChatServer(AtomicInteger hits) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
+            hits.incrementAndGet();
             // 响应结构为 OpenAI Chat Completions 合法 JSON（Spring AI 1.0.4 实测可解析）
             String json = "{\"id\":\"chatcmpl-test-1\",\"object\":\"chat.completion\",\"created\":1720000000,"
                     + "\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
@@ -582,6 +803,21 @@ class AgentOrchestrationServiceImplTest {
             byte[] body = json.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    /** 恒 HTTP 429 服务（请求计数；M07-Step5 限流场景，Spike 同款手法） */
+    private HttpServer start429Server(AtomicInteger hits) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            hits.incrementAndGet();
+            byte[] body = "too many requests".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(429, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
         });

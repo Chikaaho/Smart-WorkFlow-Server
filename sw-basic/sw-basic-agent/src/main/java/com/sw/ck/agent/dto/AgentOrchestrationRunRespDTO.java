@@ -30,4 +30,10 @@ public class AgentOrchestrationRunRespDTO {
      * 携带时原样返回；仅执行成功时设置（失败路径不暴露空会话）。
      */
     private Long sessionId;
+
+    /**
+     * 实际服务本次请求的配置 id（M07-Step5 多Key轮询）：候选切换后可能与请求携带的
+     * {@code agentModelConfigId} 不同，便于排查/审计；仅执行成功时设置。
+     */
+    private Long usedModelConfigId;
 }

@@ -42,6 +42,18 @@ public class AgentModelConfigDTO {
 
     private String remark;
 
+    /** 多Key轮询候选分组标识，null=独立配置不参与轮询 */
+    private String groupKey;
+
+    /** 组内优先级，数值越小优先级越高 */
+    private Integer sort;
+
+    /** 限流临时锁定至该时间点（只读展示，便于运营侧观察哪个 Key 当前被锁定） */
+    private LocalDateTime lockedUntil;
+
+    /** 触发限流后的锁定冷却时长（秒） */
+    private Integer quotaCooldownSeconds;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

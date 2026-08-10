@@ -126,11 +126,16 @@ class AgentModelConfigServiceImplTest {
                     update_by       VARCHAR(64),
                     deleted         SMALLINT NOT NULL DEFAULT 0,
                     tenant_id       BIGINT NOT NULL DEFAULT 0,
-                    version         BIGINT NOT NULL DEFAULT 0
+                    version         BIGINT NOT NULL DEFAULT 0,
+                    group_key       VARCHAR(100),
+                    sort            INT NOT NULL DEFAULT 0,
+                    locked_until    TIMESTAMP,
+                    quota_cooldown_seconds INT NOT NULL DEFAULT 60
                 )
                 """);
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_model_name ON sw_agent_model_config (tenant_id, name)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_tenant_deleted ON sw_agent_model_config (tenant_id, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_group ON sw_agent_model_config (tenant_id, group_key, sort)");
     }
 
     @BeforeEach
@@ -286,6 +291,45 @@ class AgentModelConfigServiceImplTest {
         assertThat(paged.getRecords()).hasSize(2);
         assertThat(paged.getTotal()).isEqualTo(3);
         assertThat(paged.getPageSize()).isEqualTo(2);
+    }
+
+    // ==================== 用例 12：M07-Step5 多Key轮询字段落库 ====================
+
+    @Test
+    @DisplayName("用例12: create/update 携带 groupKey/sort/quotaCooldownSeconds → 正确落库回读；getById DTO 只读展示新字段")
+    void saveAndRead_withGroupKeyFields() {
+        AgentModelSaveReqDTO req = createReq("multikey-model", "openai", TEST_API_KEY);
+        req.setGroupKey("g-pool");
+        req.setSort(3);
+        req.setQuotaCooldownSeconds(120);
+
+        Long id = service.create(req);
+
+        // 实体回读：新字段正确落库
+        AgentModelConfig saved = mapper.selectById(id);
+        assertThat(saved.getGroupKey()).isEqualTo("g-pool");
+        assertThat(saved.getSort()).isEqualTo(3);
+        assertThat(saved.getQuotaCooldownSeconds()).isEqualTo(120);
+        assertThat(saved.getLockedUntil()).isNull();
+
+        // update 修改 groupKey/sort/quotaCooldownSeconds → 回读生效
+        AgentModelSaveReqDTO updateReq = createReq("multikey-model", "openai", "");
+        updateReq.setGroupKey("g-pool-2");
+        updateReq.setSort(7);
+        updateReq.setQuotaCooldownSeconds(30);
+        service.update(id, updateReq);
+
+        AgentModelConfig updated = mapper.selectById(id);
+        assertThat(updated.getGroupKey()).isEqualTo("g-pool-2");
+        assertThat(updated.getSort()).isEqualTo(7);
+        assertThat(updated.getQuotaCooldownSeconds()).isEqualTo(30);
+
+        // DTO 展示：groupKey/sort/quotaCooldownSeconds/lockedUntil 只读透传
+        AgentModelConfigDTO dto = service.getById(id);
+        assertThat(dto.getGroupKey()).isEqualTo("g-pool-2");
+        assertThat(dto.getSort()).isEqualTo(7);
+        assertThat(dto.getQuotaCooldownSeconds()).isEqualTo(30);
+        assertThat(dto.getLockedUntil()).isNull();
     }
 
     // ==================== 用例 8/9/10：连通性测试 ====================

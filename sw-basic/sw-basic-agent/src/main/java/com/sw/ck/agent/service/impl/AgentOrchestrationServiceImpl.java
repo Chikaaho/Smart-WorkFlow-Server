@@ -25,14 +25,19 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientResponseException;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 编排执行引擎 Service 实现（M07 Step2）。
@@ -47,6 +52,13 @@ import java.util.Optional;
  * 包装）原样抛出、不会返回空 Optional；为稳妥同时兜底"invoke 返回空 Optional /
  * 状态缺 output"两种情况，均转 {@code success=false}。模型服务不可达/超时等经
  * Spring AI RetryTemplate 重试耗尽后抛出，同样转 {@code success=false}，不抛 500。
+ * </p>
+ * <p>
+ * <b>多Key轮询/额度限流（M07-Step5）</b>：同一 {@code groupKey} 的配置归为候选池，
+ * 高优先级 Key 遇限流（HTTP 429）时按 {@code sort} 升序切换下一候选重试；限流触发即
+ * 锁定当前配置（{@code lockedUntil = now + quotaCooldownSeconds}，惰性过期，无清理任务）。
+ * 切换重试循环受 {@code triedIds} 去重约束保证终止（组内成员有限）；{@code groupKey}
+ * 为 null 的独立配置行为与 Step2-4 完全一致（遇限流直接失败，零回归）。
  * </p>
  */
 @Service
@@ -87,6 +99,9 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     /** 消息角色：ASSISTANT（模型最终回复） */
     private static final String ROLE_ASSISTANT = "ASSISTANT";
 
+    /** 限流锁定冷却时长默认值（秒）：与 V24 列默认值 60 一致，防御手动 new 实体时字段为 null */
+    private static final int DEFAULT_QUOTA_COOLDOWN_SECONDS = 60;
+
     public AgentOrchestrationServiceImpl(AgentModelConfigMapper mapper,
                                          AesGcmCipher cipher,
                                          ChatModelFactory chatModelFactory,
@@ -113,93 +128,133 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
             throw new BaseException(CommonErrorCode.NOT_FOUND);
         }
 
-        // 解密明文 Key：仅用于本次构造 ChatModel，用完置 null 释放引用
-        String plainApiKey = null;
-        if (entity.getApiKeyCipher() != null && !entity.getApiKeyCipher().isEmpty()) {
-            plainApiKey = cipher.decrypt(entity.getApiKeyCipher());
-        }
-
         long start = System.currentTimeMillis();
         AgentOrchestrationRunRespDTO resp = new AgentOrchestrationRunRespDTO();
+        // M07-Step5 多Key轮询：候选切换重试循环。triedIds 累积已试配置 id，保证组内
+        // 每条候选最多尝试一次（组内成员有限，循环必然终止，无无限重试）。
+        Set<Long> triedIds = new HashSet<>();
+        AgentModelConfig currentConfig = entity;
+        // 会话 id 在循环外解析一次：候选切换复用同一会话，不重复创建；首次尝试时若
+        // 配置非法（ChatModelFactory 抛 IllegalArgumentException）则解析尚未执行，不落脏数据
+        Long sessionId = req.getSessionId();
+        List<AgentMessage> dbMessages = null;
+        boolean sessionResolved = false;
+        String plainApiKey = null;
         try {
-            ChatModel chatModel = chatModelFactory.build(entity, plainApiKey);
-            // M07 Step4 F04：会话获取/创建 + 历史消息加载（在 chatModel 构造之后：
-            // 配置非法时 ChatModelFactory 抛 IllegalArgumentException，不落会话脏数据）
-            Long sessionId = req.getSessionId();
-            List<AgentMessage> dbMessages;
-            if (sessionId == null) {
-                AgentSession session = new AgentSession();
-                session.setAgentModelConfigId(req.getAgentModelConfigId());
-                session.setStatus(SESSION_STATUS_ACTIVE);
-                // id（雪花 ASSIGN_ID）/createTime/createBy/tenantId/deleted/version
-                // 由 MyBatis-Plus + CommonMetaObjectHandler 填充
-                sessionMapper.insert(session);
-                sessionId = session.getId();
-                dbMessages = List.of();
-            } else {
-                // selectById 经租户拦截器自动过滤 tenant_id：跨租户/已删除/不存在会话 → null → 404 语义
-                AgentSession existing = sessionMapper.selectById(sessionId);
-                if (existing == null) {
-                    throw new BaseException(CommonErrorCode.NOT_FOUND, "会话不存在");
+            while (true) {
+                triedIds.add(currentConfig.getId());
+                // 解密当前候选的明文 Key：仅用于本次构造 ChatModel，切换候选后重新解密
+                // 对应 apiKeyCipher（解密异常直接上抛，与 Step2-4 行为一致）
+                plainApiKey = null;
+                if (currentConfig.getApiKeyCipher() != null && !currentConfig.getApiKeyCipher().isEmpty()) {
+                    plainApiKey = cipher.decrypt(currentConfig.getApiKeyCipher());
                 }
-                dbMessages = loadHistoryMessages(sessionId);
-            }
-            // 历史消息经 ThreadLocal 注入 callModel 节点（与 chatModel/tools 同款绑定模式）
-            AgentGraphFactory.bindHistoryMessages(toSpringAiMessages(dbMessages));
-            AgentGraphFactory.bindToolCallRecords(new ArrayList<>());
-            // M07 Step3：加载本租户启用的工具白名单 → 绑定到图执行线程（无工具/工厂
-            // 未注入时跳过，Prompt 构造与 Step2 完全一致）；租户隔离由租户拦截器自动完成
-            // （buildToolCallbacks(null) 不显式过滤，同 Step2 selectById 先例）
-            List<ToolCallback> tools = agentToolCallbackFactory == null
-                    ? List.of()
-                    : agentToolCallbackFactory.buildToolCallbacks(null);
-            AgentGraphFactory.bindChatModel(chatModel);
-            if (!tools.isEmpty()) {
-                AgentGraphFactory.bindTools(tools);
-            }
-            try {
-                Optional<AgentState> result = agentCompiledGraph.invoke(
-                        Map.of("input", req.getInput(), "chatModel", chatModel));
-                if (result.isEmpty()) {
-                    // 兜底：invoke 返回空 Optional（实测正常路径不会发生）
-                    resp.setSuccess(false);
-                    resp.setErrorMessage("编排引擎执行未产生结果");
-                } else {
-                    Optional<Object> output = result.get().value("output");
-                    if (output.isEmpty()) {
-                        resp.setSuccess(false);
-                        resp.setErrorMessage("编排引擎执行未产生输出");
-                    } else {
-                        String outputText = String.valueOf(output.get());
-                        resp.setSuccess(true);
-                        resp.setOutput(outputText);
-                        // M07 Step4 F04：持久化本轮 USER + ASSISTANT 消息（msg_order =
-                        // 已有消息数，0-based 单调递增）与工具调用日志，并回传会话 id
-                        int nextOrder = dbMessages.size();
-                        insertMessage(sessionId, ROLE_USER, req.getInput(), nextOrder);
-                        insertMessage(sessionId, ROLE_ASSISTANT, outputText, nextOrder + 1);
-                        persistToolCallLogs(sessionId);
-                        resp.setSessionId(sessionId);
+                try {
+                    ChatModel chatModel = chatModelFactory.build(currentConfig, plainApiKey);
+                    // M07 Step4 F04：会话获取/创建 + 历史消息加载，仅首次尝试执行（在
+                    // chatModel 构造之后：配置非法时 ChatModelFactory 抛
+                    // IllegalArgumentException，不落会话脏数据）
+                    if (!sessionResolved) {
+                        if (sessionId == null) {
+                            AgentSession session = new AgentSession();
+                            session.setAgentModelConfigId(req.getAgentModelConfigId());
+                            session.setStatus(SESSION_STATUS_ACTIVE);
+                            // id（雪花 ASSIGN_ID）/createTime/createBy/tenantId/deleted/version
+                            // 由 MyBatis-Plus + CommonMetaObjectHandler 填充
+                            sessionMapper.insert(session);
+                            sessionId = session.getId();
+                            dbMessages = List.of();
+                        } else {
+                            // selectById 经租户拦截器自动过滤 tenant_id：跨租户/已删除/不存在会话 → null → 404 语义
+                            AgentSession existing = sessionMapper.selectById(sessionId);
+                            if (existing == null) {
+                                throw new BaseException(CommonErrorCode.NOT_FOUND, "会话不存在");
+                            }
+                            dbMessages = loadHistoryMessages(sessionId);
+                        }
+                        sessionResolved = true;
                     }
+                    // 历史消息经 ThreadLocal 注入 callModel 节点（与 chatModel/tools 同款绑定模式）
+                    AgentGraphFactory.bindHistoryMessages(toSpringAiMessages(dbMessages));
+                    AgentGraphFactory.bindToolCallRecords(new ArrayList<>());
+                    // M07 Step3：加载本租户启用的工具白名单 → 绑定到图执行线程（无工具/工厂
+                    // 未注入时跳过，Prompt 构造与 Step2 完全一致）；租户隔离由租户拦截器自动完成
+                    // （buildToolCallbacks(null) 不显式过滤，同 Step2 selectById 先例）
+                    List<ToolCallback> tools = agentToolCallbackFactory == null
+                            ? List.of()
+                            : agentToolCallbackFactory.buildToolCallbacks(null);
+                    AgentGraphFactory.bindChatModel(chatModel);
+                    if (!tools.isEmpty()) {
+                        AgentGraphFactory.bindTools(tools);
+                    }
+                    try {
+                        Optional<AgentState> result = agentCompiledGraph.invoke(
+                                Map.of("input", req.getInput(), "chatModel", chatModel));
+                        if (result.isEmpty()) {
+                            // 兜底：invoke 返回空 Optional（实测正常路径不会发生）
+                            resp.setSuccess(false);
+                            resp.setErrorMessage("编排引擎执行未产生结果");
+                        } else {
+                            Optional<Object> output = result.get().value("output");
+                            if (output.isEmpty()) {
+                                resp.setSuccess(false);
+                                resp.setErrorMessage("编排引擎执行未产生输出");
+                            } else {
+                                String outputText = String.valueOf(output.get());
+                                resp.setSuccess(true);
+                                resp.setOutput(outputText);
+                                // M07-Step5：记录实际服务本次请求的配置 id（轮询切换后可能
+                                // 与请求携带的 agentModelConfigId 不同，便于排查/审计）
+                                resp.setUsedModelConfigId(currentConfig.getId());
+                                // M07 Step4 F04：持久化本轮 USER + ASSISTANT 消息（msg_order =
+                                // 已有消息数，0-based 单调递增）与工具调用日志，并回传会话 id
+                                int nextOrder = dbMessages.size();
+                                insertMessage(sessionId, ROLE_USER, req.getInput(), nextOrder);
+                                insertMessage(sessionId, ROLE_ASSISTANT, outputText, nextOrder + 1);
+                                persistToolCallLogs(sessionId);
+                                resp.setSessionId(sessionId);
+                            }
+                        }
+                    } finally {
+                        // bind/clear 对称：正常完成与异常完成（invoke 抛异常）均执行清除，防 ThreadLocal 泄漏
+                        AgentGraphFactory.clearChatModel();
+                        AgentGraphFactory.clearTools();
+                        AgentGraphFactory.clearHistoryMessages();
+                        AgentGraphFactory.clearToolCallRecords();
+                    }
+                    // 成功路径（含 invoke 空结果兜底分支）均跳出重试循环，不再尝试其他候选
+                    break;
+                } catch (IllegalArgumentException e) {
+                    // 协议不支持/配置非法：ChatModelFactory 拒绝构造 → success=false，不触发
+                    // 切换（配置静态错误而非运行时可恢复的限流状态，切换意义不大且会掩盖配置问题）
+                    resp.setSuccess(false);
+                    resp.setErrorMessage(summarizeError(e));
+                    break;
+                } catch (BaseException e) {
+                    // 业务异常（如会话不存在）保持上抛，由全局异常处理器转 404 语义，不吞为 success=false
+                    throw e;
+                } catch (Exception e) {
+                    if (isQuotaExceededException(e) && currentConfig.getGroupKey() != null) {
+                        // M07-Step5：限流 → 锁定当前配置（冷却期）→ 切换组内下一候选重试
+                        LocalDateTime now = LocalDateTime.now();
+                        int cooldownSeconds = currentConfig.getQuotaCooldownSeconds() == null
+                                ? DEFAULT_QUOTA_COOLDOWN_SECONDS
+                                : currentConfig.getQuotaCooldownSeconds();
+                        currentConfig.setLockedUntil(now.plusSeconds(cooldownSeconds));
+                        lockCurrentConfig(currentConfig);
+                        AgentModelConfig next = findNextCandidate(currentConfig.getGroupKey(), triedIds, now);
+                        if (next != null) {
+                            currentConfig = next;
+                            continue;   // 回到循环顶部：重建 ChatModel + 重新解密下一候选 Key
+                        }
+                    }
+                    // 非限流异常，或限流但无候选可切（含 groupKey=null 的独立配置）：
+                    // 按 Step2-4 原有行为失败（success=false + 异常摘要）
+                    resp.setSuccess(false);
+                    resp.setErrorMessage(summarizeError(e));
+                    break;
                 }
-            } finally {
-                // bind/clear 对称：正常完成与异常完成（invoke 抛异常）均执行清除，防 ThreadLocal 泄漏
-                AgentGraphFactory.clearChatModel();
-                AgentGraphFactory.clearTools();
-                AgentGraphFactory.clearHistoryMessages();
-                AgentGraphFactory.clearToolCallRecords();
             }
-        } catch (IllegalArgumentException e) {
-            // 协议不支持/配置非法：ChatModelFactory 拒绝构造 → success=false（方案 §11 边界）
-            resp.setSuccess(false);
-            resp.setErrorMessage(summarizeError(e));
-        } catch (BaseException e) {
-            // 业务异常（如会话不存在）保持上抛，由全局异常处理器转 404 语义，不吞为 success=false
-            throw e;
-        } catch (Exception e) {
-            // 模型服务不可达/超时/节点异常等：转 success=false + 异常摘要
-            resp.setSuccess(false);
-            resp.setErrorMessage(summarizeError(e));
         } finally {
             plainApiKey = null;
         }
@@ -260,6 +315,60 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
             log.setLatencyMs(record.getLatencyMs());
             toolCallLogMapper.insert(log);
         }
+    }
+
+    /**
+     * M07-Step5 限流异常识别（§5 V1 实测，spike 测试 ChatModelFactory429SpikeTest）：
+     * Spring AI 1.0.4 默认错误处理器（RetryUtils DEFAULT_RESPONSE_ERROR_HANDLER）对
+     * 4xx 直接抛 {@link NonTransientAiException}，消息格式固定为 "&lt;status&gt; - &lt;body&gt;"
+     * （实测 "429 - too many requests"），cause 链中不存在 RestClientResponseException。
+     * 沿 cause 链逐层检查（穿透 langgraph4j CompletionException 等包装层），并保留
+     * RestClientResponseException 状态码判断兜底（未来版本/非 Spring AI 路径）。
+     */
+    private boolean isQuotaExceededException(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof NonTransientAiException e
+                    && e.getMessage() != null && e.getMessage().contains("429")) {
+                return true;
+            }
+            if (cur instanceof RestClientResponseException rcre
+                    && rcre.getStatusCode().value() == 429) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * M07-Step5 锁定当前配置：仅更新 locked_until 列（lambdaUpdate 局部更新，避免整行
+     * 覆盖并发修改；租户隔离由租户拦截器自动完成）。
+     */
+    private void lockCurrentConfig(AgentModelConfig config) {
+        mapper.update(null,
+                Wrappers.<AgentModelConfig>lambdaUpdate()
+                        .eq(AgentModelConfig::getId, config.getId())
+                        .set(AgentModelConfig::getLockedUntil, config.getLockedUntil()));
+    }
+
+    /**
+     * M07-Step5 组内下一候选：同 groupKey、enabled=1（数字字面量，74fc415 先例——SMALLINT
+     * 列禁止 Boolean 参数比对）、未锁定（locked_until 为 null 或已过期，惰性过期判断，
+     * 无主动清理任务）、未试过（excludeIds 排除，含当前失败配置自身），按 sort 升序 +
+     * id 升序（同 sort 时确定性）取第一条；无候选返回 null。租户隔离由租户拦截器自动完成。
+     */
+    private AgentModelConfig findNextCandidate(String groupKey, Set<Long> excludeIds, LocalDateTime now) {
+        List<AgentModelConfig> candidates = mapper.selectList(
+                Wrappers.<AgentModelConfig>lambdaQuery()
+                        .eq(AgentModelConfig::getGroupKey, groupKey)
+                        .eq(AgentModelConfig::getEnabled, 1)
+                        .notIn(!excludeIds.isEmpty(), AgentModelConfig::getId, excludeIds)
+                        .and(w -> w.isNull(AgentModelConfig::getLockedUntil)
+                                .or().le(AgentModelConfig::getLockedUntil, now))
+                        .orderByAsc(AgentModelConfig::getSort)
+                        .orderByAsc(AgentModelConfig::getId));
+        return candidates.isEmpty() ? null : candidates.get(0);
     }
 
     /**
