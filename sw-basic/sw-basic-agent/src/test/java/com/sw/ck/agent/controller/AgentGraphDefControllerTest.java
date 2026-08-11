@@ -12,9 +12,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.agent.dto.graph.ProcessGraph;
 import com.sw.ck.agent.entity.AgentGraphDef;
 import com.sw.ck.agent.mapper.AgentGraphDefMapper;
+import com.sw.ck.agent.orchestration.AgentToolCallbackFactory;
+import com.sw.ck.agent.orchestration.ChatModelFactory;
 import com.sw.ck.agent.service.AgentGraphDefService;
+import com.sw.ck.agent.service.AgentGraphExecutionService;
 import com.sw.ck.agent.service.impl.AgentGraphDefServiceImpl;
+import com.sw.ck.agent.service.impl.AgentGraphExecutionServiceImpl;
 import com.sw.ck.common.config.mybatis.CommonMetaObjectHandler;
+import com.sw.ck.common.crypto.AesGcmCipher;
 import com.sw.ck.common.datascope.DataScopeType;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.response.R;
@@ -349,6 +354,69 @@ class AgentGraphDefControllerTest {
                 .andExpect(status().isForbidden());
     }
 
+    // ==================== 用例 9-12：POST /{id}/execute（M07-F02 Step8 端点） ====================
+
+    @Test
+    @DisplayName("用例9: manage 权限执行已发布图 → 200 + success=true + output=input（START→END 初始图）")
+    void execute_publishedGraph_shouldSucceed() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "执行-测试");
+        mockMvc.perform(post("/agent/graph-defs/" + id + "/publish")
+                        .header("Authorization", bearerToken(2L)))
+                .andExpect(status().isOk());
+
+        MvcResult result = mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"你好，图\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isZero();
+        assertThat(body.get("data").get("success").asBoolean()).isTrue();
+        // 初始图 START→END 无 LLM/TOOL 节点：累积文本原样到达 END
+        assertThat(body.get("data").get("output").asText()).isEqualTo("你好，图");
+        assertThat(body.get("data").get("latencyMs").asLong()).isNotNegative();
+    }
+
+    @Test
+    @DisplayName("用例10: 无权限调用 execute → 403（执行归 agent:model:manage，与发布同级）")
+    void execute_withoutPermission_shouldReturn403() throws Exception {
+        mockMvc.perform(post("/agent/graph-defs/1/execute")
+                        .header("Authorization", bearerToken(1L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"x\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("用例11: 执行 DRAFT 图 → HTTP 200 + body.code=400（图未发布）")
+    void execute_draftGraph_shouldReturnParamErrorCode() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "未发布-执行");
+
+        MvcResult result = mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"x\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isEqualTo(400);
+        assertThat(body.get("msg").asText()).contains("图未发布");
+    }
+
+    @Test
+    @DisplayName("用例12: 执行不存在的图定义 → HTTP 200 + body.code=404（NOT_FOUND）")
+    void execute_unknownId_shouldReturnNotFoundCode() throws Exception {
+        MvcResult result = mockMvc.perform(post("/agent/graph-defs/999999/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"x\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isEqualTo(404);
+    }
+
     // ==================== 组合测试配置 ====================
 
     /** 按 userId 提供可控权限的 UserDetailsProvider 测试桩 */
@@ -492,9 +560,46 @@ class AgentGraphDefControllerTest {
             return new AgentGraphDefServiceImpl(objectMapper);
         }
 
+        // ==================== 图执行（M07-F02 Step8 端点） ====================
+        // 测试图仅含 START→END（无 LLM/TOOL 节点），执行端点不触达模型/工具工厂；
+        // 工厂以 mock 装配（与 ServiceImpl 测试同款），真实 AesGcmCipher 用测试密钥
+
+        /** 测试 AES 密钥（32 字节 "0123456789abcdef0123456789abcdef" 的 Base64） */
+        private static final String TEST_CIPHER_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+
         @Bean
-        public AgentGraphDefController agentGraphDefController(AgentGraphDefService agentGraphDefService) {
-            return new AgentGraphDefController(agentGraphDefService);
+        public ChatModelFactory chatModelFactory() {
+            return mock(ChatModelFactory.class);
+        }
+
+        @Bean
+        public AgentToolCallbackFactory agentToolCallbackFactory() {
+            return mock(AgentToolCallbackFactory.class);
+        }
+
+        @Bean
+        public AesGcmCipher aesGcmCipher() {
+            return new AesGcmCipher(TEST_CIPHER_KEY);
+        }
+
+        @Bean
+        public AgentGraphExecutionService agentGraphExecutionService(
+                ObjectMapper objectMapper,
+                com.sw.ck.agent.mapper.AgentModelConfigMapper modelConfigMapper,
+                com.sw.ck.agent.mapper.tool.AgentToolInternalConfigMapper internalToolMapper,
+                com.sw.ck.agent.mapper.tool.AgentToolExternalConfigMapper externalToolMapper,
+                ChatModelFactory chatModelFactory,
+                AesGcmCipher aesGcmCipher,
+                LoginContextProvider loginContextProvider) {
+            return new AgentGraphExecutionServiceImpl(objectMapper, modelConfigMapper,
+                    internalToolMapper, externalToolMapper, chatModelFactory, aesGcmCipher,
+                    loginContextProvider);
+        }
+
+        @Bean
+        public AgentGraphDefController agentGraphDefController(AgentGraphDefService agentGraphDefService,
+                                                               AgentGraphExecutionService agentGraphExecutionService) {
+            return new AgentGraphDefController(agentGraphDefService, agentGraphExecutionService);
         }
 
         // ==================== JSON ====================
