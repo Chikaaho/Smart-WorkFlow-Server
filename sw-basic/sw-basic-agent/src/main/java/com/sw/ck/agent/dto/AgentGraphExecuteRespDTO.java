@@ -17,7 +17,7 @@ public class AgentGraphExecuteRespDTO {
     /** 是否执行成功 */
     private boolean success;
 
-    /** 最终输出文本（END 节点处的累积文本，成功时非空） */
+    /** 最终输出文本（END 节点 config.inputVar 指定变量的值，缺失/空白 = 默认变量；成功时非空） */
     private String output;
 
     /** 失败原因摘要（不含明文 API Key） */

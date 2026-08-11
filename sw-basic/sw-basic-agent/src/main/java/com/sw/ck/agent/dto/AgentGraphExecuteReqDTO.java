@@ -3,15 +3,15 @@ package com.sw.ck.agent.dto;
 import lombok.Data;
 
 /**
- * 图执行请求 DTO（M07-F02 Step8）。
+ * 图执行请求 DTO（M07-F02 Step8 + Step10 多变量执行上下文）。
  * <p>
- * 极简执行上下文：单一 {@code input} 文本作为初始累积文本（本版无多变量上下文，
- * 方案 §2-B 简化边界）。
+ * 单一 {@code input} 文本写入执行上下文默认变量（Step10：节点未指定变量名时读写
+ * 默认变量，旧图零迁移；节点可经 config.inputVar/outputVar 存取命名变量）。
  * </p>
  */
 @Data
 public class AgentGraphExecuteReqDTO {
 
-    /** 执行入参文本（初始累积文本，必填，空白拒绝） */
+    /** 执行入参文本（写入默认变量，必填，空白拒绝） */
     private String input;
 }

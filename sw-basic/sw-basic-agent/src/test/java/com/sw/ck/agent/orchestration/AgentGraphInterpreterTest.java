@@ -210,6 +210,148 @@ class AgentGraphInterpreterTest {
         assertThat(stub2.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("第一跳输出");
     }
 
+    // ==================== 用例 8：命名变量写入 + END 指定输出变量（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例8: LLM outputVar 写命名变量 + END inputVar 读回 — 命名变量写入不污染默认变量")
+    void llmNode_shouldWriteNamedVariableAndEndReadsIt() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-1");
+        AgentModelConfig config2 = modelConfig(2L, "sk-2");
+        when(chatModelFactory.build(config1, "sk-1")).thenReturn(new StubChatModel("摘要输出"));
+        CapturingChatModel stub2 = new CapturingChatModel("覆盖默认变量");
+        when(chatModelFactory.build(config2, "sk-2")).thenReturn(stub2);
+
+        // LLM1 写命名变量 summary（默认变量保持初始 input 不变）；LLM2 无变量键写默认
+        // 变量；END inputVar=summary 取最终输出
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm_1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "summary")),
+                node("node_llm_2", "LLM", Map.of("agentModelConfigId", 2L)),
+                node("node_end", "END", Map.of("inputVar", "summary")),
+                edge("e1", "node_start", "node_llm_1", Map.of()),
+                edge("e2", "node_llm_1", "node_llm_2", Map.of()),
+                edge("e3", "node_llm_2", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config1, 2L, config2), 10).run(graph, "初始输入");
+
+        // 最终输出来自 summary 变量（LLM1 输出）；LLM2 收到的仍是默认变量（初始 input，
+        // 证明命名变量写入未覆盖默认变量——多变量互不污染）
+        assertThat(output).isEqualTo("摘要输出");
+        assertThat(stub2.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("初始输入");
+    }
+
+    // ==================== 用例 9：inputVar + outputVar 链式传递（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例9: LLM inputVar 读命名变量 + outputVar 写另一命名变量 — 变量间链式传递")
+    void llmNode_shouldReadFromInputVarAndWriteToOutputVar() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-1");
+        AgentModelConfig config2 = modelConfig(2L, "sk-2");
+        when(chatModelFactory.build(config1, "sk-1")).thenReturn(new StubChatModel("中间结果"));
+        CapturingChatModel stub2 = new CapturingChatModel("最终结果");
+        when(chatModelFactory.build(config2, "sk-2")).thenReturn(stub2);
+
+        // LLM1 写 raw；LLM2 从 raw 读（UserMessage = raw 值）、写 final；END 从 final 读
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm_1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "raw")),
+                node("node_llm_2", "LLM", Map.of("agentModelConfigId", 2L, "inputVar", "raw", "outputVar", "final")),
+                node("node_end", "END", Map.of("inputVar", "final")),
+                edge("e1", "node_start", "node_llm_1", Map.of()),
+                edge("e2", "node_llm_1", "node_llm_2", Map.of()),
+                edge("e3", "node_llm_2", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config1, 2L, config2), 10).run(graph, "初始输入");
+
+        assertThat(output).isEqualTo("最终结果");
+        // 第二跳收到的是 raw 变量值（LLM1 输出），不是默认变量（初始 input）
+        assertThat(stub2.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("中间结果");
+    }
+
+    // ==================== 用例 10：未定义变量引用 → 运行时错误（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例10: LLM inputVar 引用从未写入的变量 → 抛 GraphExecutionException（运行时错误，不做静态校验）")
+    void llmNode_shouldThrowOnUndefinedVariable() {
+        AgentModelConfig config = modelConfig(1L, "sk-1");
+        when(chatModelFactory.build(config, "sk-1")).thenReturn(new StubChatModel("不应到达"));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L, "inputVar", "notExists")),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 10).run(graph, "文本"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("引用了未定义的变量: notExists");
+    }
+
+    // ==================== 用例 11：CONDITION 基于命名变量匹配（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例11: CONDITION inputVar 指定匹配变量 — 默认变量不含关键词也正确分支")
+    void condition_shouldMatchAgainstNamedVariable() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-1");
+        AgentModelConfig configOk = modelConfig(2L, "sk-ok");
+        AgentModelConfig configFail = modelConfig(3L, "sk-fail");
+        when(chatModelFactory.build(config1, "sk-1")).thenReturn(new StubChatModel("成功通过"));
+        when(chatModelFactory.build(configOk, "sk-ok")).thenReturn(new StubChatModel("成功路"));
+        when(chatModelFactory.build(configFail, "sk-fail")).thenReturn(new StubChatModel("失败路"));
+
+        // LLM1 输出写入 judge 变量（内容含"成功"）；默认变量（初始 input）不含关键词；
+        // CONDITION inputVar=judge 基于 judge 匹配 → 走成功边
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm_1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "judge")),
+                node("node_cond", "CONDITION", Map.of("inputVar", "judge")),
+                node("node_llm_ok", "LLM", Map.of("agentModelConfigId", 2L)),
+                node("node_llm_fail", "LLM", Map.of("agentModelConfigId", 3L)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm_1", Map.of()),
+                edge("e2", "node_llm_1", "node_cond", Map.of()),
+                edge("e_ok", "node_cond", "node_llm_ok", Map.of("keyword", "成功")),
+                edge("e_fail", "node_cond", "node_llm_fail", Map.of("keyword", "失败")),
+                edge("e3", "node_llm_ok", "node_end", Map.of()),
+                edge("e4", "node_llm_fail", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config1, 2L, configOk, 3L, configFail), 20)
+                .run(graph, "无关键词文本");
+
+        // 默认变量不含"成功/失败"，若 CONDITION 误用默认变量会走失败边——此处走成功边
+        // 证明匹配基于 judge 变量
+        assertThat(output).isEqualTo("成功路");
+    }
+
+    // ==================== 用例 12：零迁移兼容 — 全默认变量链路与 Step8 语义一致 ====================
+
+    @Test
+    @DisplayName("用例12: 旧图（无变量名字段）— LLM 覆盖默认变量后 CONDITION 基于新值匹配（零迁移）")
+    void legacyGraph_shouldKeepSingleTextSemantics() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-1");
+        AgentModelConfig config2 = modelConfig(2L, "sk-2");
+        when(chatModelFactory.build(config1, "sk-1")).thenReturn(new StubChatModel("发货请求处理中"));
+        when(chatModelFactory.build(config2, "sk-2")).thenReturn(new StubChatModel("发货处理结果"));
+
+        // 全图无任何变量名字段（旧图形态）：LLM 覆盖默认变量 → CONDITION 基于覆盖后的
+        // 默认变量匹配（Step8 单文本语义）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm_1", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_llm_2", "LLM", Map.of("agentModelConfigId", 2L)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm_1", Map.of()),
+                edge("e2", "node_llm_1", "node_cond", Map.of()),
+                edge("e_ship", "node_cond", "node_llm_2", Map.of("keyword", "发货")),
+                edge("e3", "node_llm_2", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config1, 2L, config2), 10).run(graph, "初始文本");
+
+        assertThat(output).isEqualTo("发货处理结果");
+    }
+
     // ==================== 内部辅助 ====================
 
     private AgentGraphInterpreter interpreter(Map<Long, AgentModelConfig> modelConfigs, int maxSteps) {

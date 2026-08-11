@@ -453,6 +453,53 @@ class AgentGraphExecutionServiceImplTest {
         assertThat(resp.getErrorMessage()).contains("model exploded");
     }
 
+    // ==================== 用例 13：命名变量存取全链路（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例13: LLM outputVar 写命名变量 + END inputVar 读回 → success=true + 命名变量值（全链路）")
+    void execute_namedVariableGraph_shouldSucceed() {
+        Long modelId = insertModelConfig("openai-4", "sk-llm-4");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("汇总输出"));
+        // LLM 写 summary 变量；END inputVar=summary 取最终输出（默认变量保持入参原值）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId, "outputVar", "summary")),
+                node("node_end", "END", Map.of("inputVar", "summary")),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参文本");
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getOutput()).isEqualTo("汇总输出");
+        assertThat(resp.getErrorMessage()).isNull();
+    }
+
+    // ==================== 用例 14：未定义变量引用 → 运行时 success=false（Step10 多变量） ====================
+
+    @Test
+    @DisplayName("用例14: LLM inputVar 引用未定义变量 → 运行时 success=false + errorMessage（不上抛）")
+    void execute_undefinedVariable_shouldReturnFailure() {
+        Long modelId = insertModelConfig("openai-5", "sk-llm-5");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("不应到达"));
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId, "inputVar", "missing")),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "文本");
+
+        assertThat(resp.isSuccess()).isFalse();
+        assertThat(resp.getErrorMessage()).contains("引用了未定义的变量: missing");
+        assertThat(resp.getLatencyMs()).isNotNegative();
+    }
+
     // ==================== 内部辅助 ====================
 
     /** 创建 → 覆盖图 → 发布，返回已发布图 id */

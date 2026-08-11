@@ -12,21 +12,28 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.util.json.JsonParser;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 图解释执行引擎（M07-F02 Step8 第一版，纯 Java 无 Spring 注解，可独立单测）。
+ * 图解释执行引擎（M07-F02 Step8 第一版 + Step10 多变量执行上下文，纯 Java 无 Spring
+ * 注解，可独立单测）。
  * <p>
  * 直接解释 {@link ProcessGraph#getElements()}（Step7 产物）：从唯一 START 节点出发，
  * 按 elements 顺序遍历节点与边，执行 LLM 节点（单跳调用，无工具无历史）/工具节点
  * （按名称精确定位单个 {@link ToolCallback} 直接调用）/条件分支节点（关键词子串匹配
- * 选路），直到 END 节点，返回最终累积文本。
+ * 选路），直到 END 节点，返回最终输出文本。
  * </p>
  * <p>
- * <b>执行上下文（本版极简）</b>：单一 {@code String currentText}（初始 = 请求
- * {@code input}），LLM/工具节点输出<b>整体覆盖</b>（非追加、非结构化多变量），
- * END 时 currentText 即为最终 output。多变量执行上下文是后续批次演进方向，本版不做。
+ * <b>执行上下文（Step10 多变量版）</b>：命名变量表 {@code Map<String, String>}，
+ * 初始仅含默认变量 {@value #DEFAULT_VARIABLE_NAME}（值 = 请求 {@code input}）。
+ * LLM/TOOL 节点可经 config.{@code inputVar}（从哪个变量读输入）与 config.
+ * {@code outputVar}（结果写到哪个变量）指定命名变量存取；CONDITION 节点经
+ * config.{@code inputVar} 指定关键词匹配基于哪个变量；END 节点经 config.
+ * {@code inputVar} 指定最终输出取自哪个变量。各键缺失/空白 = 默认变量——旧图
+ * （无变量名字段）行为与 Step8 单一 currentText 语义完全一致（零迁移）。
+ * 未定义变量引用（读一个从未写入的变量）为运行时错误，不做执行前数据流静态校验。
  * </p>
  * <p>
  * <b>与 F01 的关系（方案 §2-A）</b>：本类是与 {@link AgentGraphFactory}/LangGraph4j
@@ -41,9 +48,13 @@ import java.util.Map;
  * <p>
  * <b>节点 config 语义（本 Step 定义的执行契约）</b>：LLM 节点
  * {@code config.agentModelConfigId}（Long，必填）；TOOL 节点
- * {@code config.toolName}（String，必填）；CONDITION 出边
- * {@code config.keyword}（String，可选，空/null 的边为默认边）。config 其余字段仍为
- * 不透明 Map 原样透传（Step7 禁令），本类只消费上述三个已定义键。
+ * {@code config.toolName}（String，必填）；LLM/TOOL 节点 {@code config.inputVar} /
+ * {@code config.outputVar}（String，可选，缺失/空白 = 默认变量，Step10 新增）；
+ * CONDITION 节点 {@code config.inputVar}（String，可选，缺失/空白 = 默认变量，
+ * Step10 新增）；CONDITION 出边 {@code config.keyword}（String，可选，空/null 的边
+ * 为默认边）；END 节点 {@code config.inputVar}（String，可选，缺失/空白 = 默认变量，
+ * Step10 新增）。config 其余字段仍为不透明 Map 原样透传（Step7 禁令），本类只消费
+ * 上述已定义键。
  * </p>
  * <p>
  * <b>明文 API Key 生命周期</b>（对齐 F01 惯例）：解密出的明文 Key 仅存在于局部变量，
@@ -86,6 +97,19 @@ public class AgentGraphInterpreter {
     /** CONDITION 出边 config 键：关键词（String，空/null 的边为默认边） */
     public static final String CONFIG_KEY_KEYWORD = "keyword";
 
+    /** LLM/TOOL/CONDITION/END 节点 config 键：读取的变量名（String，缺失/空白 = 默认变量） */
+    public static final String CONFIG_KEY_INPUT_VAR = "inputVar";
+
+    /** LLM/TOOL 节点 config 键：结果写入的变量名（String，缺失/空白 = 默认变量） */
+    public static final String CONFIG_KEY_OUTPUT_VAR = "outputVar";
+
+    /**
+     * 默认变量名（旧图语义锚点）：graph 入参写入该变量；未指定变量名的节点读写该
+     * 变量（Step8 单一 currentText 语义）；CONDITION/END 未指定 inputVar 时分别基于
+     * 该变量匹配/取最终输出。零迁移关键：旧图无变量名字段，全部落此变量。
+     */
+    public static final String DEFAULT_VARIABLE_NAME = "input";
+
     // ==================== 依赖（纯构造注入，无 Spring 注解，可 mock 单测） ====================
 
     private final ChatModelFactory chatModelFactory;
@@ -126,40 +150,50 @@ public class AgentGraphInterpreter {
     }
 
     /**
-     * 解释执行整图：START → 按 elements 顺序走节点/边 → END，返回最终累积文本。
+     * 解释执行整图：START → 按 elements 顺序走节点/边 → END，返回最终输出文本。
      *
      * @param graph 已发布图（Step7 产物，config 不透明字段按本类契约消费）
-     * @param input 请求入参文本（初始累积文本）
-     * @return END 节点处的最终累积文本
-     * @throws GraphExecutionException 条件分支无匹配且无默认边 / 步数超限 / 拓扑非法等运行时错误
+     * @param input 请求入参文本（写入默认变量 {@value #DEFAULT_VARIABLE_NAME}）
+     * @return END 节点处最终输出（END config.inputVar 指定变量，缺失/空白 = 默认变量）
+     * @throws GraphExecutionException 条件分支无匹配且无默认边 / 未定义变量引用 /
+     *                                 步数超限 / 拓扑非法等运行时错误
      */
     public String run(ProcessGraph graph, String input) {
         List<GraphElement> elements = graph.getElements();
         GraphElement current = findStart(elements);
-        String text = input;
+        // 命名变量表（Step10）：初始仅含默认变量（= 请求入参）。未指定变量名的节点
+        // 读写默认变量，旧图（无变量名字段）行为与 Step8 单一 currentText 语义一致。
+        Map<String, String> variables = new HashMap<>();
+        variables.put(DEFAULT_VARIABLE_NAME, input);
         int steps = 0;
         while (!NODE_TYPE_END.equals(current.getType())) {
             if (++steps > maxSteps) {
                 throw new GraphExecutionException("执行步数超限，图可能存在环路");
             }
             switch (current.getType()) {
-                case NODE_TYPE_LLM -> text = callLlmNode(current, text);
-                case NODE_TYPE_TOOL -> text = callToolNode(current, text);
-                // START/CONDITION 为纯路由点，不动累积文本
+                case NODE_TYPE_LLM -> writeOutput(current, variables,
+                        callLlmNode(current, readInput(current, variables)));
+                case NODE_TYPE_TOOL -> writeOutput(current, variables,
+                        callToolNode(current, readInput(current, variables)));
+                // START/CONDITION 为纯路由点：START 不写变量（入参已在初始变量表），
+                // CONDITION 只读匹配文本（inputVar）不写变量
                 case NODE_TYPE_START, NODE_TYPE_CONDITION -> { }
                 default -> throw new GraphExecutionException(
                         "不支持的节点类型: " + current.getType() + "（节点 " + current.getId() + "）");
             }
-            current = findNode(nextNodeId(current, elements, text), elements);
+            current = findNode(nextNodeId(current, elements, variables), elements);
         }
-        return text;
+        // END 节点：config.inputVar 指定最终输出取自的变量（缺失/空白 = 默认变量，
+        // Step8 语义：END 时 currentText 即为最终 output）
+        return readVariable(current, variables, CONFIG_KEY_INPUT_VAR);
     }
 
     // ==================== LLM 节点 ====================
 
     /**
      * LLM 节点执行：config.agentModelConfigId → 解密 Key → {@code ChatModelFactory.build}
-     * → 以当前累积文本为 UserMessage 单跳调用（不带工具、不带历史）→ 输出覆盖累积文本。
+     * → 以入参文本（inputVar 变量值，由调用方解析）为 UserMessage 单跳调用（不带工具、
+     * 不带历史）→ 返回输出（由调用方写入 outputVar 指定变量）。
      */
     private String callLlmNode(GraphElement node, String text) {
         Long modelConfigId = requireConfigId(node, CONFIG_KEY_AGENT_MODEL_CONFIG_ID);
@@ -189,7 +223,8 @@ public class AgentGraphInterpreter {
 
     /**
      * TOOL 节点执行：config.toolName → 白名单装载结果中按名称精确匹配单个
-     * {@link ToolCallback} → 以当前累积文本为入参直接调用 → 返回文本覆盖累积文本。
+     * {@link ToolCallback} → 以入参文本（inputVar 变量值，由调用方解析）为入参直接
+     * 调用 → 返回文本（由调用方写入 outputVar 指定变量）。
      * <p>
      * 与 F01 的区别：F01 把全部启用工具注入 LLM 由模型自行决定；本节点由图的拓扑
      * 决定调用哪个工具，只定位这一个回调并直接调用。每次执行即时装载（工厂非启动
@@ -220,21 +255,78 @@ public class AgentGraphInterpreter {
         return decoded;
     }
 
+    // ==================== 多变量执行上下文（Step10） ====================
+
+    /**
+     * 读取节点输入文本：config.{@code inputVar} 指定的变量值（缺失/空白 = 默认变量
+     * {@value #DEFAULT_VARIABLE_NAME}）。
+     *
+     * @throws GraphExecutionException 变量未定义（从未写入且非默认变量）——未定义
+     * 变量引用为运行时错误，不做执行前数据流静态校验（方向文档已确认）
+     */
+    private String readInput(GraphElement node, Map<String, String> variables) {
+        return readVariable(node, variables, CONFIG_KEY_INPUT_VAR);
+    }
+
+    /**
+     * 按变量名键读取变量值：config 键缺失/空白 = 默认变量；变量不存在抛运行时错误。
+     * 默认变量恒存在（run 开头写入请求入参），因此旧图（无变量名字段）永不触发。
+     */
+    private String readVariable(GraphElement node, Map<String, String> variables, String varKey) {
+        String varName = resolveVarName(node, varKey);
+        String value = variables.get(varName);
+        if (value == null) {
+            throw new GraphExecutionException("引用了未定义的变量: " + varName
+                    + "（节点 " + node.getId() + "）");
+        }
+        return value;
+    }
+
+    /**
+     * 写入节点输出：config.{@code outputVar} 指定结果写入的变量（缺失/空白 = 默认变量，
+     * 覆盖语义与 Step8 单文本版一致；指定新变量名 = 创建变量）。LLM/TOOL 结果恒为
+     * 非空文本，变量值类型全为 String（非文本类型不在本 Step 范围）。
+     */
+    private void writeOutput(GraphElement node, Map<String, String> variables, String output) {
+        variables.put(resolveVarName(node, CONFIG_KEY_OUTPUT_VAR), output);
+    }
+
+    /**
+     * 解析节点 config 中的变量名键：config 缺失 / 键缺失 / 值非 String / 空白 → 默认
+     * 变量（与 {@link #keywordOf} 同款宽松语义：旧图无变量名字段即落默认变量，零迁移）。
+     */
+    private String resolveVarName(GraphElement node, String varKey) {
+        Map<String, Object> config = node.getConfig();
+        if (config == null) {
+            return DEFAULT_VARIABLE_NAME;
+        }
+        Object value = config.get(varKey);
+        if (!(value instanceof String s) || s.isBlank()) {
+            return DEFAULT_VARIABLE_NAME;
+        }
+        return s;
+    }
+
     // ==================== 条件分支与选路 ====================
 
     /**
      * 确定下一节点 id：CONDITION 节点按 §2-C 关键词子串匹配（elements 原始顺序即优先级，
-     * 不排序）；其余节点取唯一出边。
+     * 不排序），匹配文本 = CONDITION 节点 config.{@code inputVar} 指定的变量值（缺失/
+     * 空白 = 默认变量，Step10 语义）；其余节点取唯一出边。
      *
-     * @throws GraphExecutionException 条件无匹配且无默认边 / 默认边不唯一 / 出边数量非法
+     * @throws GraphExecutionException 条件无匹配且无默认边 / 默认边不唯一 / 出边数量非法 /
+     *                                 未定义变量引用
      */
-    private String nextNodeId(GraphElement current, List<GraphElement> elements, String text) {
+    private String nextNodeId(GraphElement current, List<GraphElement> elements,
+                              Map<String, String> variables) {
         List<GraphElement> edges = outgoingEdges(current, elements);
         if (NODE_TYPE_CONDITION.equals(current.getType())) {
+            // 匹配文本 = CONDITION 节点 inputVar 指定的变量值（缺失 = 默认变量）
+            String matchText = readInput(current, variables);
             // 按 elements 出现顺序逐条匹配关键词，取第一个命中（不排序，原始顺序即优先级）
             for (GraphElement edge : edges) {
                 String keyword = keywordOf(edge);
-                if (keyword != null && text.contains(keyword)) {
+                if (keyword != null && matchText.contains(keyword)) {
                     return edge.getTarget();
                 }
             }
@@ -343,9 +435,10 @@ public class AgentGraphInterpreter {
     }
 
     /**
-     * 图执行运行时错误（Step8 定义）：条件分支无匹配且无默认边 / 步数超限（疑似环路）/
-     * 拓扑非法（出边数量、悬空引用、未知节点类型等）。由执行 Service 捕获并转
-     * {@code success=false} + errorMessage（不上抛，与 F01 run() success=false 语义一致）。
+     * 图执行运行时错误（Step8 定义 + Step10 扩展）：条件分支无匹配且无默认边 / 未定义
+     * 变量引用（Step10 新增）/ 步数超限（疑似环路）/ 拓扑非法（出边数量、悬空引用、
+     * 未知节点类型等）。由执行 Service 捕获并转 {@code success=false} + errorMessage
+     * （不上抛，与 F01 run() success=false 语义一致）。
      */
     public static class GraphExecutionException extends RuntimeException {
 
