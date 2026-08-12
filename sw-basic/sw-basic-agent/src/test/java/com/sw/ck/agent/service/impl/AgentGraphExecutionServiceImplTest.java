@@ -2,6 +2,7 @@ package com.sw.ck.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.config.GlobalConfig;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
@@ -9,12 +10,19 @@ import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerIntercept
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.agent.dto.AgentGraphExecuteRespDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionDetailDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionNodeDTO;
 import com.sw.ck.agent.dto.graph.GraphElement;
 import com.sw.ck.agent.dto.graph.ProcessGraph;
 import com.sw.ck.agent.entity.AgentGraphDef;
+import com.sw.ck.agent.entity.AgentGraphExecution;
+import com.sw.ck.agent.entity.AgentGraphExecutionNode;
 import com.sw.ck.agent.entity.AgentModelConfig;
 import com.sw.ck.agent.entity.tool.AgentToolInternalConfig;
 import com.sw.ck.agent.mapper.AgentGraphDefMapper;
+import com.sw.ck.agent.mapper.AgentGraphExecutionMapper;
+import com.sw.ck.agent.mapper.AgentGraphExecutionNodeMapper;
 import com.sw.ck.agent.mapper.AgentModelConfigMapper;
 import com.sw.ck.agent.mapper.tool.AgentToolExternalConfigMapper;
 import com.sw.ck.agent.mapper.tool.AgentToolInternalConfigMapper;
@@ -29,6 +37,8 @@ import com.sw.ck.common.crypto.AesGcmCipher;
 import com.sw.ck.common.datascope.DataScopeType;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
@@ -110,6 +120,12 @@ class AgentGraphExecutionServiceImplTest {
 
     @Autowired
     private AgentToolInternalConfigMapper internalToolMapper;
+
+    @Autowired
+    private AgentGraphExecutionMapper executionMapper;
+
+    @Autowired
+    private AgentGraphExecutionNodeMapper executionNodeMapper;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -215,10 +231,55 @@ class AgentGraphExecutionServiceImplTest {
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_model_tenant_deleted ON sw_agent_model_config (tenant_id, deleted)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_internal_tenant_deleted ON sw_agent_tool_internal (tenant_id, deleted)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_tool_external_tenant_deleted ON sw_agent_tool_external (tenant_id, deleted)");
+        // Step12 执行历史两表（对齐 V27/V28 H2 脚本 DDL）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_graph_execution (
+                    id                BIGINT NOT NULL PRIMARY KEY,
+                    graph_def_id      BIGINT NOT NULL,
+                    graph_def_version INT NOT NULL,
+                    status            VARCHAR(20) NOT NULL,
+                    input             CLOB,
+                    result_text       CLOB,
+                    error_category    VARCHAR(50),
+                    error_message     CLOB,
+                    latency_ms        BIGINT,
+                    create_time       TIMESTAMP,
+                    create_by         VARCHAR(64),
+                    update_time       TIMESTAMP,
+                    update_by         VARCHAR(64),
+                    deleted           SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id         BIGINT NOT NULL DEFAULT 0,
+                    version           BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_gexec_graph ON sw_agent_graph_execution (graph_def_id, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_gexec_time ON sw_agent_graph_execution (tenant_id, create_time, deleted)");
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_graph_execution_node (
+                    id                BIGINT       NOT NULL PRIMARY KEY,
+                    execution_id      BIGINT       NOT NULL,
+                    node_seq          INT          NOT NULL,
+                    branch_id         VARCHAR(64)  NOT NULL,
+                    node_id           VARCHAR(100) NOT NULL,
+                    node_type         VARCHAR(20)  NOT NULL,
+                    node_latency_ms   BIGINT,
+                    variable_snapshot CLOB,
+                    create_time       TIMESTAMP,
+                    create_by         VARCHAR(64),
+                    update_time       TIMESTAMP,
+                    update_by         VARCHAR(64),
+                    deleted           SMALLINT     NOT NULL DEFAULT 0,
+                    tenant_id         BIGINT       NOT NULL DEFAULT 0,
+                    version           BIGINT       NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_genode_exec ON sw_agent_graph_execution_node (execution_id, node_seq, deleted)");
     }
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("DELETE FROM sw_agent_graph_execution_node");
+        jdbcTemplate.update("DELETE FROM sw_agent_graph_execution");
         jdbcTemplate.update("DELETE FROM sw_agent_graph_def");
         jdbcTemplate.update("DELETE FROM sw_agent_model_config");
         jdbcTemplate.update("DELETE FROM sw_agent_tool_internal");
@@ -628,6 +689,303 @@ class AgentGraphExecutionServiceImplTest {
                         .isEqualTo(CommonErrorCode.PARAM_ERROR.getCode()));
     }
 
+    // ==================== 用例 20：执行成功 → 全链路落库（Step12） ====================
+
+    @Test
+    @DisplayName("用例20: 执行成功 → 落库 status=SUCCESS + output/input/graphDefId/version + 节点明细 3 行（START/LLM/END）+ 响应 executionId")
+    void execute_success_shouldPersistHistory() {
+        Long modelId = insertModelConfig("openai-8", "sk-persist");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("持久化输出"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参文本");
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getExecutionId()).isNotNull();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec).isNotNull();
+        assertThat(exec.getStatus()).isEqualTo("SUCCESS");
+        assertThat(exec.getResultText()).isEqualTo("持久化输出");
+        assertThat(exec.getInput()).isEqualTo("入参文本");
+        assertThat(exec.getGraphDefId()).isEqualTo(id);
+        assertThat(exec.getGraphDefVersion()).isEqualTo(2);
+        assertThat(exec.getErrorCategory()).isNull();
+        assertThat(exec.getLatencyMs()).isNotNegative();
+        // 节点明细 3 行：START/LLM/END，branchId 全 0，快照含默认变量
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .orderByAsc(AgentGraphExecutionNode::getNodeSeq));
+        assertThat(nodes).hasSize(3);
+        assertThat(nodes.get(0).getNodeType()).isEqualTo("START");
+        assertThat(nodes.get(1).getNodeType()).isEqualTo("LLM");
+        assertThat(nodes.get(2).getNodeType()).isEqualTo("END");
+        assertThat(nodes).allSatisfy(n -> {
+            assertThat(n.getBranchId()).isEqualTo("0");
+            assertThat(n.getNodeLatencyMs()).isNotNegative();
+            assertThat(n.getVariableSnapshot()).contains("input");
+        });
+    }
+
+    // ==================== 用例 21：运行时失败 → 失败路径落库（Step12） ====================
+
+    @Test
+    @DisplayName("用例21: 条件无匹配且无默认边 → 落库 status=FAILED + errorCategory=CONDITION_NO_MATCH + 节点明细含失败节点行")
+    void execute_runtimeFailure_shouldPersistFailure() {
+        Long modelId = insertModelConfig("openai-9", "sk-fail");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("不应到达"));
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_cond", Map.of()),
+                edge("e_key", "node_cond", "node_llm", Map.of("keyword", "退款")),
+                edge("e2", "node_llm", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "无关文本");
+
+        assertThat(resp.isSuccess()).isFalse();
+        assertThat(resp.getExecutionId()).isNotNull();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getStatus()).isEqualTo("FAILED");
+        assertThat(exec.getErrorCategory()).isEqualTo("CONDITION_NO_MATCH");
+        assertThat(exec.getErrorMessage()).contains("条件分支无匹配且无默认边");
+        assertThat(exec.getResultText()).isNull();
+        // 失败路径节点明细完整：START + 失败节点 CONDITION（各占一行）
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .orderByAsc(AgentGraphExecutionNode::getNodeSeq));
+        assertThat(nodes).hasSize(2);
+        assertThat(nodes.get(0).getNodeId()).isEqualTo("node_start");
+        assertThat(nodes.get(1).getNodeId()).isEqualTo("node_cond");
+        assertThat(nodes.get(1).getNodeLatencyMs()).isNotNegative();
+    }
+
+    // ==================== 用例 22-26：错误分类维度落库（Step12 §5.3） ====================
+
+    @Test
+    @DisplayName("用例22: LLM 第三方异常 → 落库 errorCategory=MODEL_CALL_FAILED")
+    void execute_llmThirdPartyFailure_shouldPersistModelCallFailed() {
+        Long modelId = insertModelConfig("openai-10", "sk-throw");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new ThrowingChatModel());
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "文本");
+
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getErrorCategory()).isEqualTo("MODEL_CALL_FAILED");
+        assertThat(exec.getErrorMessage()).contains("model exploded");
+    }
+
+    @Test
+    @DisplayName("用例23: 步数超限（预算耗尽仍死循环）→ 落库 errorCategory=STEP_LIMIT")
+    void execute_stepLimit_shouldPersistStepLimit() {
+        Long modelId = insertModelConfig("openai-11", "sk-loop-limit");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("死循环"));
+        // START→CONDITION（keyword 边→END / 默认边→LLM）→LLM→CONDITION：输入与 LLM
+        // 输出永不含关键词 → 死循环，靠全局步数兜底（END 可达，执行前校验放行）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "exit")),
+                edge("e_back", "node_cond", "node_llm", Map.of()),
+                edge("e4", "node_llm", "node_cond", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "无关键词文本");
+
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getErrorCategory()).isEqualTo("STEP_LIMIT");
+        assertThat(exec.getErrorMessage()).contains("执行步数超限");
+    }
+
+    @Test
+    @DisplayName("用例24: 循环迭代超限 → 落库 errorCategory=LOOP_LIMIT")
+    void execute_loopLimit_shouldPersistLoopLimit() {
+        Long modelId = insertModelConfig("openai-12", "sk-loop-over");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("永不退出"));
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 1)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "exit")),
+                edge("e_back", "node_cond", "node_loop", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "开始");
+
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getErrorCategory()).isEqualTo("LOOP_LIMIT");
+        assertThat(exec.getErrorMessage()).contains("循环迭代次数超限");
+    }
+
+    @Test
+    @DisplayName("用例25: 未定义变量引用 → 落库 errorCategory=UNDEFINED_VARIABLE")
+    void execute_undefinedVariable_shouldPersistUndefinedVariable() {
+        Long modelId = insertModelConfig("openai-13", "sk-undef");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("不应到达"));
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId, "inputVar", "missing")),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "文本");
+
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getErrorCategory()).isEqualTo("UNDEFINED_VARIABLE");
+    }
+
+    @Test
+    @DisplayName("用例26: 工具回调运行时异常 → 落库 errorCategory=TOOL_CALL_FAILED")
+    void execute_toolRuntimeFailure_shouldPersistToolCallFailed() {
+        insertInternalTool("boom_tool", 1);
+        ToolCallback boom = FunctionToolCallback.builder("boom_tool", (String s) -> {
+            throw new IllegalStateException("tool exploded");
+        })
+                .description("抛错工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(boom));
+        Long id = createPublishedGraph(toolGraph("boom_tool"));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "你好");
+
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getErrorCategory()).isEqualTo("TOOL_CALL_FAILED");
+        assertThat(exec.getErrorMessage()).contains("tool exploded");
+    }
+
+    // ==================== 用例 27：执行历史列表（Step12 查询端点） ====================
+
+    @Test
+    @DisplayName("用例27: 执行历史列表 — 分页 + graphDefId 过滤；无过滤 = 全部")
+    void pageExecutions_shouldReturnPagedAndFiltered() {
+        Long modelId = insertModelConfig("openai-14", "sk-list");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("列表输出"));
+        Long id1 = createPublishedGraph(llmGraph(modelId));
+        Long id2 = createPublishedGraph(llmGraph(modelId));
+
+        service.execute(id1, "第一次");
+        service.execute(id2, "第二次");
+        service.execute(id1, "第三次");
+
+        PageResult<AgentGraphExecutionDTO> byGraph = service.pageExecutions(new PageParam(), id1);
+        assertThat(byGraph.getTotal()).isEqualTo(2);
+        assertThat(byGraph.getRecords()).hasSize(2);
+        assertThat(byGraph.getRecords()).allSatisfy(r -> {
+            assertThat(r.getStatus()).isEqualTo("SUCCESS");
+            assertThat(r.getGraphDefId()).isEqualTo(id1);
+            assertThat(r.getLatencyMs()).isNotNegative();
+        });
+        PageResult<AgentGraphExecutionDTO> all = service.pageExecutions(new PageParam(), null);
+        assertThat(all.getTotal()).isEqualTo(3);
+        assertThat(all.getRecords()).hasSize(3);
+    }
+
+    // ==================== 用例 28：执行详情（Step12 查询端点） ====================
+
+    @Test
+    @DisplayName("用例28: 执行详情 — input/output/latency/version 回显；不存在的 id → NOT_FOUND")
+    void getExecution_shouldReturnDetailOrNotFound() {
+        Long modelId = insertModelConfig("openai-15", "sk-detail");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("详情输出"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "详情入参");
+
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getId()).isEqualTo(resp.getExecutionId());
+        assertThat(detail.getStatus()).isEqualTo("SUCCESS");
+        assertThat(detail.getInput()).isEqualTo("详情入参");
+        assertThat(detail.getOutput()).isEqualTo("详情输出");
+        assertThat(detail.getLatencyMs()).isNotNegative();
+        assertThat(detail.getGraphDefVersion()).isEqualTo(2);
+        assertThat(detail.getCreateTime()).isNotNull();
+
+        assertThatThrownBy(() -> service.getExecution(999999L))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+    }
+
+    // ==================== 用例 29：节点明细（Step12 查询端点） ====================
+
+    @Test
+    @DisplayName("用例29: 节点明细 — nodeSeq 升序返回；执行记录不存在 → NOT_FOUND")
+    void listExecutionNodes_shouldReturnOrderedOrNotFound() {
+        Long modelId = insertModelConfig("openai-16", "sk-nodes");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("节点输出"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+
+        List<AgentGraphExecutionNodeDTO> nodes = service.listExecutionNodes(resp.getExecutionId());
+        assertThat(nodes).hasSize(3);
+        assertThat(nodes.get(0).getNodeSeq()).isEqualTo(1);
+        assertThat(nodes.get(0).getNodeType()).isEqualTo("START");
+        assertThat(nodes.get(1).getNodeSeq()).isEqualTo(2);
+        assertThat(nodes.get(1).getNodeType()).isEqualTo("LLM");
+        assertThat(nodes.get(2).getNodeSeq()).isEqualTo(3);
+        assertThat(nodes.get(2).getNodeType()).isEqualTo("END");
+        assertThat(nodes.get(1).getVariableSnapshot()).contains("input");
+
+        assertThatThrownBy(() -> service.listExecutionNodes(999999L))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+    }
+
+    // ==================== 用例 30：跨租户隔离（Step12 查询） ====================
+
+    @Test
+    @DisplayName("用例30: 跨租户隔离 — 租户 B 查执行历史列表为空、详情/节点 → NOT_FOUND")
+    void executionHistory_crossTenant_shouldBeIsolated() {
+        Long modelId = insertModelConfig("openai-17", "sk-tenant");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("租户输出"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+
+        setLoginUser(TENANT_200, USER_1);
+        assertThat(service.pageExecutions(new PageParam(), null).getTotal()).isZero();
+        assertThatThrownBy(() -> service.getExecution(resp.getExecutionId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+        assertThatThrownBy(() -> service.listExecutionNodes(resp.getExecutionId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+    }
+
     // ==================== 内部辅助 ====================
 
     /** 创建 → 覆盖图 → 发布，返回已发布图 id */
@@ -882,11 +1240,14 @@ class AgentGraphExecutionServiceImplTest {
                 AgentModelConfigMapper modelConfigMapper,
                 AgentToolInternalConfigMapper internalToolMapper,
                 AgentToolExternalConfigMapper externalToolMapper,
+                AgentGraphExecutionMapper executionMapper,
+                AgentGraphExecutionNodeMapper executionNodeMapper,
                 ChatModelFactory chatModelFactory,
                 AesGcmCipher aesGcmCipher,
                 LoginContextProvider loginContextProvider) {
             return new AgentGraphExecutionServiceImpl(objectMapper, modelConfigMapper,
-                    internalToolMapper, externalToolMapper, chatModelFactory, aesGcmCipher,
+                    internalToolMapper, externalToolMapper, executionMapper,
+                    executionNodeMapper, chatModelFactory, aesGcmCipher,
                     loginContextProvider);
         }
     }

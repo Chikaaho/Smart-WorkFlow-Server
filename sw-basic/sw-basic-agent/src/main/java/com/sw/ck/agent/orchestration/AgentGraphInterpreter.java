@@ -75,6 +75,15 @@ import java.util.Map;
  * 并行分支写同一变量名 = <b>最后写入覆盖</b>（用户已决策，不拦截不告警）——变量表仍
  * 为单一共享 {@code Map}，单线程推进无并发安全问题。
  * </p>
+ * <p>
+ * <b>执行历史轨迹采集（Step12）</b>：每次节点出队产生一条 {@link NodeExecutionTrace}
+ * （全局步序 nodeSeq + 并行分支标识 branchId + 节点级耗时 + 变量表快照），经
+ * {@link #getTraces()} 由调用方（执行 Service）读取落库——解释器只采集不持久化，
+ * 不持有 Mapper 依赖，保持纯 Java 可独立单测定位；成功与失败路径都完整留痕。
+ * 运行时错误统一携带<b>错误分类</b>（{@code GraphExecutionException.category}，
+ * 见 {@link #ERROR_CATEGORY_STEP_LIMIT} 等），第三方异常（模型/工具调用）在调用点
+ * 包装为带分类的图执行异常，失败记录可结构化落库。
+ * </p>
  *
  * @see GraphExecutionException
  */
@@ -139,6 +148,37 @@ public class AgentGraphInterpreter {
      */
     public static final int DEFAULT_MAX_ITERATIONS = 10;
 
+    // ==================== 错误分类常量（Step12 执行历史持久化新增） ====================
+    // GraphExecutionException 携带分类（varchar + String，D52 精神不建 enum），
+    // 供执行 Service 结构化落库 error_category；既有 1 参构造保留（分类 = UNKNOWN）。
+
+    /** 执行步数超限（疑似环路） */
+    public static final String ERROR_CATEGORY_STEP_LIMIT = "STEP_LIMIT";
+
+    /** 循环迭代超限（LOOP maxIterations 耗尽） */
+    public static final String ERROR_CATEGORY_LOOP_LIMIT = "LOOP_LIMIT";
+
+    /** 引用了未定义的变量 */
+    public static final String ERROR_CATEGORY_UNDEFINED_VARIABLE = "UNDEFINED_VARIABLE";
+
+    /** 条件分支无匹配且无默认边 */
+    public static final String ERROR_CATEGORY_CONDITION_NO_MATCH = "CONDITION_NO_MATCH";
+
+    /** 图拓扑/配置非法（出边数量、悬空引用、未知节点类型、节点缺配置等防御性兜底） */
+    public static final String ERROR_CATEGORY_TOPOLOGY_INVALID = "TOPOLOGY_INVALID";
+
+    /** LLM 模型调用失败（第三方异常/未返回文本/配置缺失） */
+    public static final String ERROR_CATEGORY_MODEL_CALL_FAILED = "MODEL_CALL_FAILED";
+
+    /** 工具调用失败（第三方异常/工具不存在/未返回文本） */
+    public static final String ERROR_CATEGORY_TOOL_CALL_FAILED = "TOOL_CALL_FAILED";
+
+    /** 未分类兜底（理论不可达：全部抛出点均已带分类） */
+    public static final String ERROR_CATEGORY_UNKNOWN = "UNKNOWN";
+
+    /** 根分支路径（非 FORK 分支的 branchId；FORK 扇出后按出边顺序追加 "-<下标>"） */
+    private static final String ROOT_BRANCH_ID = "0";
+
     // ==================== 依赖（纯构造注入，无 Spring 注解，可 mock 单测） ====================
 
     private final ChatModelFactory chatModelFactory;
@@ -155,6 +195,9 @@ public class AgentGraphInterpreter {
 
     /** 执行步数硬上限（防死循环兜底，调用方按 elements 节点数 × 2 计算） */
     private final int maxSteps;
+
+    /** 本次执行的节点轨迹（Step12 采集，每次 run 重建；由调用方读取落库，本类不持 Mapper） */
+    private List<NodeExecutionTrace> traces;
 
     /**
      * @param chatModelFactory    动态模型客户端工厂（F01 既有，只读复用）
@@ -199,65 +242,111 @@ public class AgentGraphInterpreter {
         variables.put(DEFAULT_VARIABLE_NAME, input);
         // 活跃执行点集合（Step11）：FORK 扇出后多分支并存，每轮取队首活跃点执行一步，
         // 产出 0/1/N 个后继活跃点（FIFO 交替推进，确定性顺序；逻辑并发非线程级并行）。
-        List<String> activeNodeIds = new ArrayList<>();
-        activeNodeIds.add(findStart(elements).getId());
+        // Step12 起活跃点携带分支路径（branchPath，FORK 按出边出现顺序追加下标）——
+        // FORK 分支复用同一节点 id，靠 branchPath 区分"哪个分支的第几次访问"。
+        List<ActiveExecutionPoint> activePoints = new ArrayList<>();
+        activePoints.add(new ActiveExecutionPoint(findStart(elements).getId(), ROOT_BRANCH_ID));
         // LOOP 迭代计数（按节点 id）与 JOIN 到达计数（按节点 id）
         Map<String, Integer> loopIterationCounts = new HashMap<>();
         Map<String, Integer> joinArrivalCounts = new HashMap<>();
+        // Step12 轨迹采集：节点出队即分配全局步序（1-based），节点执行/路由完成后补
+        // 节点级耗时与变量快照；成功/失败路径都完整留痕（失败节点在 catch 中补录后
+        // 上抛）。轨迹由调用方（执行 Service）经 getTraces() 读取落库——解释器只采集
+        // 不持久化，保持纯 Java 无 Mapper 依赖（方向文档 §5.4）。
+        traces = new ArrayList<>();
+        long traceSeq = 0;
         int steps = 0;
-        while (!activeNodeIds.isEmpty()) {
-            String currentId = activeNodeIds.remove(0);
+        while (!activePoints.isEmpty()) {
+            ActiveExecutionPoint point = activePoints.remove(0);
+            String currentId = point.nodeId;
+            long stepStartNanos = System.nanoTime();
             GraphElement current = findNode(currentId, elements);
-            // 任一活跃点到达 END → 立即终止全部执行（其余分支停止推进），返回该 END
-            // 节点 config.inputVar 读取值（缺失/空白 = 默认变量，Step8 语义）
-            if (NODE_TYPE_END.equals(current.getType())) {
-                return readVariable(current, variables, CONFIG_KEY_INPUT_VAR);
-            }
-            // 全局步数上限（跨所有活跃点累计）：死循环 / JOIN 挂起死锁统一由超限兜底
-            if (++steps > maxSteps) {
-                throw new GraphExecutionException("执行步数超限，图可能存在环路");
-            }
-            switch (current.getType()) {
-                case NODE_TYPE_LLM -> writeOutput(current, variables,
-                        callLlmNode(current, readInput(current, variables)));
-                case NODE_TYPE_TOOL -> writeOutput(current, variables,
-                        callToolNode(current, readInput(current, variables)));
-                // START/CONDITION 为纯路由点：START 不写变量（入参已在初始变量表），
-                // CONDITION 只读匹配文本（inputVar）不写变量
-                case NODE_TYPE_START, NODE_TYPE_CONDITION -> { }
-                case NODE_TYPE_LOOP -> {
-                    // 按节点 id 迭代计数 +1，超限抛错；否则沿唯一出边进循环体
-                    int iteration = loopIterationCounts.merge(current.getId(), 1, Integer::sum);
-                    if (iteration > maxIterationsOf(current)) {
-                        throw new GraphExecutionException("循环迭代次数超限: " + current.getId());
+            NodeExecutionTrace trace = new NodeExecutionTrace(++traceSeq, point.branchPath,
+                    current.getId(), current.getType());
+            traces.add(trace);
+            try {
+                // 任一活跃点到达 END → 立即终止全部执行（其余分支停止推进），返回该 END
+                // 节点 config.inputVar 读取值（缺失/空白 = 默认变量，Step8 语义）
+                if (NODE_TYPE_END.equals(current.getType())) {
+                    finishTrace(trace, stepStartNanos, variables);
+                    return readVariable(current, variables, CONFIG_KEY_INPUT_VAR);
+                }
+                // 全局步数上限（跨所有活跃点累计）：死循环 / JOIN 挂起死锁统一由超限兜底
+                if (++steps > maxSteps) {
+                    throw new GraphExecutionException(ERROR_CATEGORY_STEP_LIMIT,
+                            "执行步数超限，图可能存在环路");
+                }
+                switch (current.getType()) {
+                    case NODE_TYPE_LLM -> writeOutput(current, variables,
+                            callLlmNode(current, readInput(current, variables)));
+                    case NODE_TYPE_TOOL -> writeOutput(current, variables,
+                            callToolNode(current, readInput(current, variables)));
+                    // START/CONDITION 为纯路由点：START 不写变量（入参已在初始变量表），
+                    // CONDITION 只读匹配文本（inputVar）不写变量
+                    case NODE_TYPE_START, NODE_TYPE_CONDITION -> { }
+                    case NODE_TYPE_LOOP -> {
+                        // 按节点 id 迭代计数 +1，超限抛错；否则沿唯一出边进循环体
+                        int iteration = loopIterationCounts.merge(current.getId(), 1, Integer::sum);
+                        if (iteration > maxIterationsOf(current)) {
+                            throw new GraphExecutionException(ERROR_CATEGORY_LOOP_LIMIT,
+                                    "循环迭代次数超限: " + current.getId());
+                        }
                     }
-                }
-                case NODE_TYPE_FORK -> { /* 扇出：无动作，路由段按全部出边产出多活跃点 */ }
-                case NODE_TYPE_JOIN -> {
-                    // 到达计数 +1；未达静态入边数 → 本活跃点挂起（不入队），等待其余分支；
-                    // 达到 → 合成单个活跃点沿唯一出边继续（路由段统一处理）
-                    int arrived = joinArrivalCounts.merge(current.getId(), 1, Integer::sum);
-                    if (arrived < incomingEdgeCount(current, elements)) {
-                        continue;
+                    case NODE_TYPE_FORK -> { /* 扇出：无动作，路由段按全部出边产出多活跃点 */ }
+                    case NODE_TYPE_JOIN -> {
+                        // 到达计数 +1；未达静态入边数 → 本活跃点挂起（不入队），等待其余分支；
+                        // 达到 → 合成单个活跃点沿唯一出边继续（路由段统一处理）
+                        int arrived = joinArrivalCounts.merge(current.getId(), 1, Integer::sum);
+                        if (arrived < incomingEdgeCount(current, elements)) {
+                            finishTrace(trace, stepStartNanos, variables);
+                            continue;
+                        }
                     }
+                    default -> throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                            "不支持的节点类型: " + current.getType() + "（节点 " + current.getId() + "）");
                 }
-                default -> throw new GraphExecutionException(
-                        "不支持的节点类型: " + current.getType() + "（节点 " + current.getId() + "）");
-            }
-            // 后继路由：FORK 将当前活跃点替换为其全部出边分支（确定性顺序 = 出边在
-            // elements 中的出现顺序）；其余节点单后继（CONDITION 单选一；LOOP/JOIN/
-            // START/LLM/TOOL 出边唯一约束由 nextNodeId 强制）
-            if (NODE_TYPE_FORK.equals(current.getType())) {
-                for (GraphElement edge : outgoingEdges(current, elements)) {
-                    activeNodeIds.add(edge.getTarget());
+                // 后继路由：FORK 将当前活跃点替换为其全部出边分支（确定性顺序 = 出边在
+                // elements 中的出现顺序，分支路径追加出边下标）；其余节点单后继（CONDITION
+                // 单选一；LOOP/JOIN/START/LLM/TOOL 出边唯一约束由 nextNodeId 强制）
+                if (NODE_TYPE_FORK.equals(current.getType())) {
+                    int branchIndex = 0;
+                    for (GraphElement edge : outgoingEdges(current, elements)) {
+                        activePoints.add(new ActiveExecutionPoint(edge.getTarget(),
+                                point.branchPath + "-" + branchIndex++));
+                    }
+                } else {
+                    activePoints.add(new ActiveExecutionPoint(
+                            nextNodeId(current, elements, variables), point.branchPath));
                 }
-            } else {
-                activeNodeIds.add(nextNodeId(current, elements, variables));
+                finishTrace(trace, stepStartNanos, variables);
+            } catch (RuntimeException e) {
+                // 本步失败：节点轨迹仍完整留痕（耗时 + 失败时点变量快照），再上抛
+                finishTrace(trace, stepStartNanos, variables);
+                throw e;
             }
         }
         // 活跃点耗尽且无 END 到达（如 JOIN 静态入边数无法由当前路径满足 → 挂起后无后继）。
         // 执行前校验只保证 END 可达、不保证汇合可满足，此处按图设计缺陷显式抛错，不静默返回。
-        throw new GraphExecutionException("所有执行点已终止但未到达 END 节点（JOIN 汇合入边数无法满足）");
+        throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                "所有执行点已终止但未到达 END 节点（JOIN 汇合入边数无法满足）");
+    }
+
+    // ==================== 轨迹读取（Step12 执行历史持久化） ====================
+
+    /**
+     * 本次执行的节点轨迹（Step12）：run 前调用返回空列表；run 后（含失败路径）
+     * 返回全部访问记录（nodeSeq 升序，含 END 与失败节点）。由调用方（执行 Service）
+     * 读取落库——解释器只采集不持久化，保持纯 Java 可独立单测定位。
+     */
+    public List<NodeExecutionTrace> getTraces() {
+        return traces == null ? List.of() : traces;
+    }
+
+    /** 完成一条节点轨迹：节点级耗时（出队到本步结束）+ 该时点变量表快照 */
+    private void finishTrace(NodeExecutionTrace trace, long stepStartNanos,
+                             Map<String, String> variables) {
+        trace.nodeLatencyMs = (System.nanoTime() - stepStartNanos) / 1_000_000;
+        trace.variableSnapshot = new HashMap<>(variables);
     }
 
     // ==================== LLM 节点 ====================
@@ -272,7 +361,8 @@ public class AgentGraphInterpreter {
         AgentModelConfig modelConfig = modelConfigs.get(modelConfigId);
         if (modelConfig == null) {
             // 执行前校验已拦截（PARAM_ERROR），此处为防御性兜底
-            throw new GraphExecutionException("LLM 节点引用的模型配置不存在: " + modelConfigId);
+            throw new GraphExecutionException(ERROR_CATEGORY_MODEL_CALL_FAILED,
+                    "LLM 节点引用的模型配置不存在: " + modelConfigId);
         }
         String plainApiKey = null;
         try {
@@ -283,9 +373,19 @@ public class AgentGraphInterpreter {
             ChatResponse response = chatModel.call(new Prompt(new UserMessage(text)));
             String output = response.getResult().getOutput().getText();
             if (output == null) {
-                throw new GraphExecutionException("LLM 节点未返回文本: " + node.getId());
+                throw new GraphExecutionException(ERROR_CATEGORY_MODEL_CALL_FAILED,
+                        "LLM 节点未返回文本: " + node.getId());
             }
             return output;
+        } catch (GraphExecutionException e) {
+            // 自有异常（未返回文本等）已带分类，原样上抛
+            throw e;
+        } catch (Exception e) {
+            // 第三方异常（解密失败/模型网络超时/429/未识别响应等）：包装为带分类的
+            // 图执行异常（Step12 错误分类维度），message 沿用 cause 最深非空文本，
+            // errorMessage 摘要语义不变
+            throw new GraphExecutionException(ERROR_CATEGORY_MODEL_CALL_FAILED,
+                    e.getMessage(), e);
         } finally {
             plainApiKey = null;
         }
@@ -306,12 +406,13 @@ public class AgentGraphInterpreter {
     private String callToolNode(GraphElement node, String text) {
         String toolName = requireConfigString(node, CONFIG_KEY_TOOL_NAME);
         if (toolCallbackFactory == null) {
-            throw new GraphExecutionException("工具工厂未装配，无法执行 TOOL 节点: " + toolName);
+            throw new GraphExecutionException(ERROR_CATEGORY_TOOL_CALL_FAILED,
+                    "工具工厂未装配，无法执行 TOOL 节点: " + toolName);
         }
         ToolCallback target = toolCallbackFactory.buildToolCallbacks(tenantId).stream()
                 .filter(cb -> toolName.equals(cb.getToolDefinition().name()))
                 .findFirst()
-                .orElseThrow(() -> new GraphExecutionException(
+                .orElseThrow(() -> new GraphExecutionException(ERROR_CATEGORY_TOOL_CALL_FAILED,
                         "TOOL 节点引用的工具不存在或未启用: " + toolName));
         // 工具回调契约（与 F01 一致，工厂回执 §3 实测）：FunctionToolCallback 的 call()
         // 入参为 JSON 字符串字面量（LLM 按 {"type":"string"} schema 发送），白名单方法
@@ -319,12 +420,21 @@ public class AgentGraphInterpreter {
         // 解释器把累积文本 JSON 编码后传入，并把返回的编码文本解码还原为纯文本后覆盖
         // 累积文本（图执行上下文是给下游节点/最终输出使用的用户可读文本，与 F01 中
         // LLM 直接消费编码文本的用途不同）。
-        String result = target.call(JsonParser.toJson(text));
-        String decoded = decodeIfJsonString(result);
-        if (decoded == null) {
-            throw new GraphExecutionException("TOOL 节点未返回文本: " + node.getId());
+        try {
+            String result = target.call(JsonParser.toJson(text));
+            String decoded = decodeIfJsonString(result);
+            if (decoded == null) {
+                throw new GraphExecutionException(ERROR_CATEGORY_TOOL_CALL_FAILED,
+                        "TOOL 节点未返回文本: " + node.getId());
+            }
+            return decoded;
+        } catch (GraphExecutionException e) {
+            throw e;
+        } catch (Exception e) {
+            // 第三方异常（工具执行抛错等）：包装为带分类的图执行异常（Step12 错误分类维度）
+            throw new GraphExecutionException(ERROR_CATEGORY_TOOL_CALL_FAILED,
+                    e.getMessage(), e);
         }
-        return decoded;
     }
 
     // ==================== 多变量执行上下文（Step10） ====================
@@ -348,8 +458,8 @@ public class AgentGraphInterpreter {
         String varName = resolveVarName(node, varKey);
         String value = variables.get(varName);
         if (value == null) {
-            throw new GraphExecutionException("引用了未定义的变量: " + varName
-                    + "（节点 " + node.getId() + "）");
+            throw new GraphExecutionException(ERROR_CATEGORY_UNDEFINED_VARIABLE,
+                    "引用了未定义的变量: " + varName + "（节点 " + node.getId() + "）");
         }
         return value;
     }
@@ -411,17 +521,21 @@ public class AgentGraphInterpreter {
                 return defaultEdges.get(0).getTarget();
             }
             if (defaultEdges.isEmpty()) {
-                throw new GraphExecutionException("条件分支无匹配且无默认边: " + current.getId());
+                throw new GraphExecutionException(ERROR_CATEGORY_CONDITION_NO_MATCH,
+                        "条件分支无匹配且无默认边: " + current.getId());
             }
-            throw new GraphExecutionException("条件分支默认边不唯一: " + current.getId());
+            throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                    "条件分支默认边不唯一: " + current.getId());
         }
         // 非条件节点：必须且只能有一条出边（START/END/LLM/TOOL/LOOP/JOIN；FORK 不
         // 经此方法，由 run() 路由段按全部出边扇出）
         if (edges.isEmpty()) {
-            throw new GraphExecutionException("节点没有出边，无法继续执行: " + current.getId());
+            throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                    "节点没有出边，无法继续执行: " + current.getId());
         }
         if (edges.size() > 1) {
-            throw new GraphExecutionException("非条件节点的出边不唯一: " + current.getId());
+            throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                    "非条件节点的出边不唯一: " + current.getId());
         }
         return edges.get(0).getTarget();
     }
@@ -490,7 +604,7 @@ public class AgentGraphInterpreter {
                 return element;
             }
         }
-        throw new GraphExecutionException("图中不存在 START 节点");
+        throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID, "图中不存在 START 节点");
     }
 
     /**
@@ -515,14 +629,15 @@ public class AgentGraphInterpreter {
                 return element;
             }
         }
-        throw new GraphExecutionException("边引用了不存在的节点: " + id);
+        throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID, "边引用了不存在的节点: " + id);
     }
 
     /** 读取节点 config 中的 Long 型必填键（缺失/非数值 → 运行时错误，防御性兜底） */
     private Long requireConfigId(GraphElement node, String key) {
         Map<String, Object> config = node.getConfig();
         if (config == null || !(config.get(key) instanceof Number n)) {
-            throw new GraphExecutionException("节点缺少 " + key + ": " + node.getId());
+            throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                    "节点缺少 " + key + ": " + node.getId());
         }
         return n.longValue();
     }
@@ -531,25 +646,116 @@ public class AgentGraphInterpreter {
     private String requireConfigString(GraphElement node, String key) {
         Map<String, Object> config = node.getConfig();
         if (config == null || !(config.get(key) instanceof String s) || s.isBlank()) {
-            throw new GraphExecutionException("节点缺少 " + key + ": " + node.getId());
+            throw new GraphExecutionException(ERROR_CATEGORY_TOPOLOGY_INVALID,
+                    "节点缺少 " + key + ": " + node.getId());
         }
         return s;
     }
 
     /**
-     * 图执行运行时错误（Step8 定义 + Step10 扩展）：条件分支无匹配且无默认边 / 未定义
-     * 变量引用（Step10 新增）/ 步数超限（疑似环路）/ 拓扑非法（出边数量、悬空引用、
-     * 未知节点类型等）。由执行 Service 捕获并转 {@code success=false} + errorMessage
-     * （不上抛，与 F01 run() success=false 语义一致）。
+     * 图执行运行时错误（Step8 定义 + Step10 扩展 + Step12 错误分类）：条件分支无匹配
+     * 且无默认边 / 未定义变量引用 / 步数超限（疑似环路）/ 拓扑非法（出边数量、悬空引用、
+     * 未知节点类型等）/ 模型或工具调用第三方异常。由执行 Service 捕获并转
+     * {@code success=false} + errorMessage + errorCategory（不上抛，与 F01 run()
+     * success=false 语义一致）。
+     * <p>
+     * <b>Step12 分类维度</b>：{@code category} 在抛出点显式携带（
+     * {@link #ERROR_CATEGORY_STEP_LIMIT} 等），第三方异常（模型/工具调用）在调用点
+     * 包装为带分类的实例——全部运行时失败均可结构化落库，不靠文本子串匹配。
+     * 既有 1/2 参构造保留（分类 = {@link #ERROR_CATEGORY_UNKNOWN}，兼容外部直接构造）。
+     * </p>
      */
     public static class GraphExecutionException extends RuntimeException {
 
+        private final String category;
+
         public GraphExecutionException(String message) {
-            super(message);
+            this(ERROR_CATEGORY_UNKNOWN, message);
         }
 
         public GraphExecutionException(String message, Throwable cause) {
+            this(ERROR_CATEGORY_UNKNOWN, message, cause);
+        }
+
+        public GraphExecutionException(String category, String message) {
+            super(message);
+            this.category = category;
+        }
+
+        public GraphExecutionException(String category, String message, Throwable cause) {
             super(message, cause);
+            this.category = category;
+        }
+
+        /** 错误分类（Step12，落库 {@code error_category}） */
+        public String getCategory() {
+            return category;
+        }
+    }
+
+    /**
+     * 节点执行轨迹（Step12 采集，纯数据载体，无 Spring 依赖）：每次节点出队 = 一条
+     * 记录。{@code nodeSeq} 为本次执行内全局步序（1-based，含 END）；{@code branchId}
+     * 为并行分支标识（FORK 按出边出现顺序追加下标，"0" 为根路径；JOIN 汇合后沿用最后
+     * 到达分支的 branchId；LOOP 同分支迭代 = 多条 nodeSeq 递增记录）。失败路径同样
+     * 留痕：失败节点在 catch 中补录耗时与失败时点变量快照后上抛。
+     */
+    public static class NodeExecutionTrace {
+
+        private final long nodeSeq;
+
+        private final String branchId;
+
+        private final String nodeId;
+
+        private final String nodeType;
+
+        private long nodeLatencyMs;
+
+        private Map<String, String> variableSnapshot;
+
+        public NodeExecutionTrace(long nodeSeq, String branchId, String nodeId, String nodeType) {
+            this.nodeSeq = nodeSeq;
+            this.branchId = branchId;
+            this.nodeId = nodeId;
+            this.nodeType = nodeType;
+        }
+
+        public long getNodeSeq() {
+            return nodeSeq;
+        }
+
+        public String getBranchId() {
+            return branchId;
+        }
+
+        public String getNodeId() {
+            return nodeId;
+        }
+
+        public String getNodeType() {
+            return nodeType;
+        }
+
+        public long getNodeLatencyMs() {
+            return nodeLatencyMs;
+        }
+
+        public Map<String, String> getVariableSnapshot() {
+            return variableSnapshot;
+        }
+    }
+
+    /** 活跃执行点（Step11 多活跃点模型 + Step12 分支路径）：节点 id + 分支路径 */
+    private static class ActiveExecutionPoint {
+
+        private final String nodeId;
+
+        private final String branchPath;
+
+        ActiveExecutionPoint(String nodeId, String branchPath) {
+            this.nodeId = nodeId;
+            this.branchPath = branchPath;
         }
     }
 }

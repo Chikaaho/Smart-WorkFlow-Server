@@ -3,12 +3,16 @@ package com.sw.ck.agent.dto;
 import lombok.Data;
 
 /**
- * 图执行响应 DTO（M07-F02 Step8）。
+ * 图执行响应 DTO（M07-F02 Step8 + Step12 执行历史）。
  * <p>
  * 语义对齐 F01 {@code AgentOrchestrationRunRespDTO}：图执行运行时错误（条件无匹配且
  * 无默认边 / 步数超限 / 模型或工具调用异常）以 {@code success=false} + 非空
  * {@code errorMessage} 表达，不上抛（与 F01 run() success=false 语义一致）；
  * {@code errorMessage} 只含异常摘要，绝不包含明文 API Key。
+ * </p>
+ * <p>
+ * Step12 追加 {@code executionId}（执行历史记录 id，成功/失败均存在）——纯追加字段，
+ * 不改变既有四字段（success/output/errorMessage/latencyMs）语义（方向文档 §3 允许）。
  * </p>
  */
 @Data
@@ -25,4 +29,7 @@ public class AgentGraphExecuteRespDTO {
 
     /** 执行耗时（毫秒） */
     private long latencyMs;
+
+    /** 执行历史记录 id（Step12，sw_agent_graph_execution 雪花 id，成功/失败均返回） */
+    private Long executionId;
 }

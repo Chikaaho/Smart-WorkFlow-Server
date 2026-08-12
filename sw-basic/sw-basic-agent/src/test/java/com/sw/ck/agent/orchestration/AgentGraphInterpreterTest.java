@@ -563,6 +563,184 @@ class AgentGraphInterpreterTest {
                 .hasMessageContaining("执行步数超限");
     }
 
+    // ==================== 用例 20：顺序链路轨迹采集（Step12） ====================
+
+    @Test
+    @DisplayName("用例20: 顺序链路轨迹 — START→LLM→END 共 3 条记录，nodeSeq 1-3、branchId 全 0、快照含输入与模型输出")
+    void sequential_trace_shouldRecordEveryNodeVisit() {
+        AgentModelConfig config = modelConfig(1L, "sk-trace");
+        when(chatModelFactory.build(config, "sk-trace")).thenReturn(new StubChatModel("轨迹输出"));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+
+        AgentGraphInterpreter interpreter = interpreter(Map.of(1L, config), 10);
+        String output = interpreter.run(graph, "原始输入");
+        List<AgentGraphInterpreter.NodeExecutionTrace> traces = interpreter.getTraces();
+
+        assertThat(output).isEqualTo("轨迹输出");
+        assertThat(traces).hasSize(3);
+        assertThat(traces.get(0).getNodeSeq()).isEqualTo(1);
+        assertThat(traces.get(0).getNodeId()).isEqualTo("node_start");
+        assertThat(traces.get(0).getNodeType()).isEqualTo("START");
+        assertThat(traces.get(1).getNodeSeq()).isEqualTo(2);
+        assertThat(traces.get(1).getNodeId()).isEqualTo("node_llm");
+        assertThat(traces.get(1).getNodeType()).isEqualTo("LLM");
+        assertThat(traces.get(2).getNodeSeq()).isEqualTo(3);
+        assertThat(traces.get(2).getNodeId()).isEqualTo("node_end");
+        // 分支标识：非 FORK 路径恒为 "0"
+        assertThat(traces).allSatisfy(t -> assertThat(t.getBranchId()).isEqualTo("0"));
+        // 节点级耗时非负
+        assertThat(traces).allSatisfy(t -> assertThat(t.getNodeLatencyMs()).isNotNegative());
+        // 变量快照：START 后仅默认变量（入参原值）；LLM 后默认变量被模型输出覆盖
+        assertThat(traces.get(0).getVariableSnapshot()).containsEntry("input", "原始输入");
+        assertThat(traces.get(1).getVariableSnapshot()).containsEntry("input", "轨迹输出");
+    }
+
+    // ==================== 用例 21：并行分支轨迹标识（Step12） ====================
+
+    @Test
+    @DisplayName("用例21: FORK→JOIN 并行轨迹 — 两分支 branchId 分别为 0-0/0-1（按出边顺序），JOIN 后沿用最后到达分支标识")
+    void forkJoin_trace_shouldDistinguishBranches() {
+        AgentModelConfig configB1 = modelConfig(1L, "sk-b1");
+        when(chatModelFactory.build(configB1, "sk-b1")).thenReturn(new StubChatModel("分支1"));
+        ToolCallback echo = FunctionToolCallback.builder("echo_tool", (String s) -> "分支2")
+                .description("回声工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(echo));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_llm_b1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "v1")),
+                node("node_tool_b2", "TOOL", Map.of("toolName", "echo_tool", "outputVar", "v2")),
+                node("node_join", "JOIN", Map.of()),
+                node("node_end", "END", Map.of("inputVar", "v1")),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_llm_b1", Map.of()),
+                edge("e3", "node_fork", "node_tool_b2", Map.of()),
+                edge("e4", "node_llm_b1", "node_join", Map.of()),
+                edge("e5", "node_tool_b2", "node_join", Map.of()),
+                edge("e6", "node_join", "node_end", Map.of()));
+
+        AgentGraphInterpreter interpreter = interpreter(Map.of(1L, configB1), 30);
+        String output = interpreter.run(graph, "入参");
+        List<AgentGraphInterpreter.NodeExecutionTrace> traces = interpreter.getTraces();
+
+        assertThat(output).isEqualTo("分支1");
+        // FIFO 交替推进：START(0) → FORK(0) → B1(0-0) → B2(0-1) → JOIN 两次到达
+        // （0-0 挂起留痕、0-1 汇合放行）→ END(0-1，沿用最后到达分支)
+        assertThat(traces).hasSize(7);
+        assertThat(traces.get(0).getBranchId()).isEqualTo("0");          // START
+        assertThat(traces.get(1).getBranchId()).isEqualTo("0");          // FORK
+        assertThat(traces.get(2).getBranchId()).isEqualTo("0-0");        // B1（第一条出边）
+        assertThat(traces.get(3).getBranchId()).isEqualTo("0-1");        // B2（第二条出边）
+        assertThat(traces.get(4).getBranchId()).isEqualTo("0-0");        // JOIN 第一次到达（挂起）
+        assertThat(traces.get(5).getBranchId()).isEqualTo("0-1");        // JOIN 第二次到达（汇合放行）
+        assertThat(traces.get(6).getBranchId()).isEqualTo("0-1");        // END（沿用最后到达分支）
+        // nodeSeq 全局递增且唯一（JOIN 挂起到达同样占一条，分支轨迹完整留痕）
+        List<Long> seqs = traces.stream().map(AgentGraphInterpreter.NodeExecutionTrace::getNodeSeq).toList();
+        assertThat(seqs).isSorted();
+        assertThat(seqs).containsExactly(1L, 2L, 3L, 4L, 5L, 6L, 7L);
+    }
+
+    // ==================== 用例 22：循环迭代轨迹（Step12） ====================
+
+    @Test
+    @DisplayName("用例22: LOOP 迭代轨迹 — 同节点多次访问 = 多条 nodeSeq 递增记录，branchId 相同，快照反映迭代输出")
+    void loop_trace_shouldRecordEveryIteration() {
+        AgentModelConfig config = modelConfig(1L, "sk-loop-trace");
+        when(chatModelFactory.build(config, "sk-loop-trace"))
+                .thenReturn(new SequencedChatModel("结果1", "结果2", "退出"));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 3)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "退出")),
+                edge("e_back", "node_cond", "node_loop", Map.of()));
+
+        AgentGraphInterpreter interpreter = interpreter(Map.of(1L, config), 30);
+        String output = interpreter.run(graph, "开始循环");
+        List<AgentGraphInterpreter.NodeExecutionTrace> traces = interpreter.getTraces();
+
+        assertThat(output).isEqualTo("退出");
+        // 3 轮迭代：LOOP 节点被访问 3 次（含退出轮），LLM 3 次，CONDITION 3 次，+START+END
+        List<AgentGraphInterpreter.NodeExecutionTrace> loopVisits = traces.stream()
+                .filter(t -> t.getNodeId().equals("node_loop"))
+                .toList();
+        assertThat(loopVisits).hasSize(3);
+        assertThat(loopVisits).allSatisfy(t -> assertThat(t.getBranchId()).isEqualTo("0"));
+        // 同分支迭代 = nodeSeq 递增的独立记录（轨迹可区分第几次访问）
+        assertThat(loopVisits.get(0).getNodeSeq()).isLessThan(loopVisits.get(1).getNodeSeq());
+        assertThat(loopVisits.get(1).getNodeSeq()).isLessThan(loopVisits.get(2).getNodeSeq());
+        // 循环体变量的演进在快照中可见（默认变量 = 最新 LLM 输出）
+        AgentGraphInterpreter.NodeExecutionTrace lastLlm = traces.stream()
+                .filter(t -> t.getNodeType().equals("LLM"))
+                .reduce((a, b) -> b).orElseThrow();
+        assertThat(lastLlm.getVariableSnapshot()).containsEntry("input", "退出");
+    }
+
+    // ==================== 用例 23：失败路径轨迹与错误分类（Step12） ====================
+
+    @Test
+    @DisplayName("用例23: 失败路径留痕 — 条件无匹配且无默认边抛错后轨迹仍完整（含失败节点行），异常分类 CONDITION_NO_MATCH")
+    void failure_trace_shouldRecordVisitedNodesAndCategory() {
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_cond", Map.of()),
+                edge("e_key", "node_cond", "node_llm", Map.of("keyword", "退款")),
+                edge("e2", "node_llm", "node_end", Map.of()));
+
+        AgentGraphInterpreter interpreter = interpreter(Map.of(), 10);
+        assertThatThrownBy(() -> interpreter.run(graph, "无关文本"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("条件分支无匹配且无默认边")
+                .satisfies(ex -> assertThat(((AgentGraphInterpreter.GraphExecutionException) ex)
+                        .getCategory()).isEqualTo("CONDITION_NO_MATCH"));
+
+        // 失败路径轨迹完整：START、CONDITION（失败节点）均有行，nodeSeq 递增
+        List<AgentGraphInterpreter.NodeExecutionTrace> traces = interpreter.getTraces();
+        assertThat(traces).hasSize(2);
+        assertThat(traces.get(0).getNodeId()).isEqualTo("node_start");
+        assertThat(traces.get(1).getNodeId()).isEqualTo("node_cond");
+        assertThat(traces.get(1).getNodeLatencyMs()).isNotNegative();
+    }
+
+    // ==================== 用例 24：错误分类 — 步数超限（Step12） ====================
+
+    @Test
+    @DisplayName("用例24: 错误分类 — 步数超限抛 GraphExecutionException.category = STEP_LIMIT")
+    void stepLimit_shouldCarryCategory() {
+        AgentModelConfig config = modelConfig(1L, "sk-cat");
+        when(chatModelFactory.build(config, "sk-cat")).thenReturn(new StubChatModel("循环输出"));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e_loop", "node_llm", "node_llm", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 4).run(graph, "进来就出不去"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("执行步数超限")
+                .satisfies(ex -> assertThat(((AgentGraphInterpreter.GraphExecutionException) ex)
+                        .getCategory()).isEqualTo("STEP_LIMIT"));
+    }
+
     // ==================== 内部辅助 ====================
 
     private AgentGraphInterpreter interpreter(Map<Long, AgentModelConfig> modelConfigs, int maxSteps) {

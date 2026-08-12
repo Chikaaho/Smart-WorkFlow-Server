@@ -137,7 +137,7 @@ class AgentGraphDefControllerTest {
     @Autowired
     private AgentGraphDefService service;
 
-    // ==================== 建表（V25 H2 脚本 DDL） ====================
+    // ==================== 建表（V25/V27/V28 H2 脚本 DDL） ====================
 
     @BeforeAll
     static void createTables(@Autowired JdbcTemplate jt) {
@@ -160,10 +160,55 @@ class AgentGraphDefControllerTest {
                 """);
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sw_agent_graph_key ON sw_agent_graph_def (tenant_id, graph_key)");
         jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_graph_tenant_deleted ON sw_agent_graph_def (tenant_id, deleted)");
+        // Step12 执行历史两表（对齐 V27/V28 H2 脚本 DDL；execute 端点现会落库）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_graph_execution (
+                    id                BIGINT NOT NULL PRIMARY KEY,
+                    graph_def_id      BIGINT NOT NULL,
+                    graph_def_version INT NOT NULL,
+                    status            VARCHAR(20) NOT NULL,
+                    input             CLOB,
+                    result_text       CLOB,
+                    error_category    VARCHAR(50),
+                    error_message     CLOB,
+                    latency_ms        BIGINT,
+                    create_time       TIMESTAMP,
+                    create_by         VARCHAR(64),
+                    update_time       TIMESTAMP,
+                    update_by         VARCHAR(64),
+                    deleted           SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id         BIGINT NOT NULL DEFAULT 0,
+                    version           BIGINT NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_gexec_graph ON sw_agent_graph_execution (graph_def_id, deleted)");
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_gexec_time ON sw_agent_graph_execution (tenant_id, create_time, deleted)");
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sw_agent_graph_execution_node (
+                    id                BIGINT       NOT NULL PRIMARY KEY,
+                    execution_id      BIGINT       NOT NULL,
+                    node_seq          INT          NOT NULL,
+                    branch_id         VARCHAR(64)  NOT NULL,
+                    node_id           VARCHAR(100) NOT NULL,
+                    node_type         VARCHAR(20)  NOT NULL,
+                    node_latency_ms   BIGINT,
+                    variable_snapshot CLOB,
+                    create_time       TIMESTAMP,
+                    create_by         VARCHAR(64),
+                    update_time       TIMESTAMP,
+                    update_by         VARCHAR(64),
+                    deleted           SMALLINT     NOT NULL DEFAULT 0,
+                    tenant_id         BIGINT       NOT NULL DEFAULT 0,
+                    version           BIGINT       NOT NULL DEFAULT 0
+                )
+                """);
+        jt.execute("CREATE INDEX IF NOT EXISTS idx_sw_agent_genode_exec ON sw_agent_graph_execution_node (execution_id, node_seq, deleted)");
     }
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("DELETE FROM sw_agent_graph_execution_node");
+        jdbcTemplate.update("DELETE FROM sw_agent_graph_execution");
         jdbcTemplate.update("DELETE FROM sw_agent_graph_def");
         LoginUserHolder.clear();
     }
@@ -417,6 +462,140 @@ class AgentGraphDefControllerTest {
         assertThat(body.get("code").asInt()).isEqualTo(404);
     }
 
+    // ==================== 用例 13-17：执行历史查询端点（M07 Step12） ====================
+
+    @Test
+    @DisplayName("用例13: 执行后响应含 executionId；GET /agent/graph-executions 列表（superAdmin）→ total=1 + status=SUCCESS")
+    void execute_thenListHistory_shouldReturnPersistedRecord() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "历史-测试");
+        mockMvc.perform(post("/agent/graph-defs/" + id + "/publish")
+                        .header("Authorization", bearerToken(2L)))
+                .andExpect(status().isOk());
+
+        MvcResult execResult = mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"历史入参\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode execBody = objectMapper.readTree(execResult.getResponse().getContentAsString());
+        assertThat(execBody.get("code").asInt()).isZero();
+        assertThat(execBody.get("data").get("success").asBoolean()).isTrue();
+        assertThat(execBody.get("data").get("executionId").asLong()).isPositive();
+
+        MvcResult listResult = mockMvc.perform(get("/agent/graph-executions")
+                        .header("Authorization", bearerToken(3L)))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode listBody = objectMapper.readTree(listResult.getResponse().getContentAsString());
+        assertThat(listBody.get("code").asInt()).isZero();
+        assertThat(listBody.get("data").get("total").asInt()).isEqualTo(1);
+        assertThat(listBody.get("data").get("records").get(0).get("status").asText())
+                .isEqualTo("SUCCESS");
+        assertThat(listBody.get("data").get("records").get(0).get("graphDefId").asLong())
+                .isEqualTo(id);
+        // 列表不含 input/output 大字段（编译期防线，接口级复核）
+        assertThat(listBody.get("data").get("records").get(0).has("output")).isFalse();
+        assertThat(listBody.get("data").get("records").get(0).has("input")).isFalse();
+    }
+
+    @Test
+    @DisplayName("用例14: 无 agent:model:view 权限访问 GET /agent/graph-executions → 403")
+    void historyList_withoutViewPermission_shouldReturn403() throws Exception {
+        mockMvc.perform(get("/agent/graph-executions")
+                        .header("Authorization", bearerToken(1L)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("用例15: GET /agent/graph-executions/{executionId} 详情 → 200 + status=SUCCESS + input/output 回显；不存在 → body.code=404")
+    void historyDetail_shouldReturnFullDetailOrNotFound() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "详情-历史");
+        mockMvc.perform(post("/agent/graph-defs/" + id + "/publish")
+                        .header("Authorization", bearerToken(2L)))
+                .andExpect(status().isOk());
+        MvcResult execResult = mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"详情入参\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        long executionId = objectMapper.readTree(execResult.getResponse().getContentAsString())
+                .get("data").get("executionId").asLong();
+
+        MvcResult detailResult = mockMvc.perform(get("/agent/graph-executions/" + executionId)
+                        .header("Authorization", bearerToken(3L)))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode detailBody = objectMapper.readTree(detailResult.getResponse().getContentAsString());
+        assertThat(detailBody.get("code").asInt()).isZero();
+        assertThat(detailBody.get("data").get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(detailBody.get("data").get("input").asText()).isEqualTo("详情入参");
+        // 初始图 START→END 无 LLM/TOOL：输出 = 入参原样到达 END
+        assertThat(detailBody.get("data").get("output").asText()).isEqualTo("详情入参");
+        assertThat(detailBody.get("data").get("latencyMs").asLong()).isNotNegative();
+
+        MvcResult missing = mockMvc.perform(get("/agent/graph-executions/999999")
+                        .header("Authorization", bearerToken(3L)))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(missing.getResponse().getContentAsString())
+                .get("code").asInt()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("用例16: GET /agent/graph-executions/{executionId}/nodes → 200 + 节点明细 nodeSeq 升序（START/END 初始图 2 行）")
+    void historyNodes_shouldReturnOrderedNodeTraces() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "节点-历史");
+        mockMvc.perform(post("/agent/graph-defs/" + id + "/publish")
+                        .header("Authorization", bearerToken(2L)))
+                .andExpect(status().isOk());
+        MvcResult execResult = mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"轨迹入参\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        long executionId = objectMapper.readTree(execResult.getResponse().getContentAsString())
+                .get("data").get("executionId").asLong();
+
+        MvcResult nodesResult = mockMvc.perform(get("/agent/graph-executions/" + executionId + "/nodes")
+                        .header("Authorization", bearerToken(3L)))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode nodesBody = objectMapper.readTree(nodesResult.getResponse().getContentAsString());
+        assertThat(nodesBody.get("code").asInt()).isZero();
+        assertThat(nodesBody.get("data")).hasSize(2);
+        assertThat(nodesBody.get("data").get(0).get("nodeSeq").asInt()).isEqualTo(1);
+        assertThat(nodesBody.get("data").get(0).get("nodeType").asText()).isEqualTo("START");
+        assertThat(nodesBody.get("data").get(1).get("nodeSeq").asInt()).isEqualTo(2);
+        assertThat(nodesBody.get("data").get(1).get("nodeType").asText()).isEqualTo("END");
+        assertThat(nodesBody.get("data").get(1).get("branchId").asText()).isEqualTo("0");
+        assertThat(nodesBody.get("data").get(1).get("variableSnapshot").asText()).contains("input");
+    }
+
+    @Test
+    @DisplayName("用例17: 执行 DRAFT 图 → 400（校验失败不落库，列表 total=0）")
+    void execute_draftGraph_shouldNotPersistHistory() throws Exception {
+        Long id = createGraphAs(bearerToken(2L), "未发布-历史");
+
+        mockMvc.perform(post("/agent/graph-defs/" + id + "/execute")
+                        .header("Authorization", bearerToken(2L))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"x\"}"))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(
+                        objectMapper.readTree(result.getResponse().getContentAsString())
+                                .get("code").asInt()).isEqualTo(400));
+
+        MvcResult listResult = mockMvc.perform(get("/agent/graph-executions")
+                        .header("Authorization", bearerToken(3L)))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(listResult.getResponse().getContentAsString())
+                .get("data").get("total").asInt()).isZero();
+    }
+
     // ==================== 组合测试配置 ====================
 
     /** 按 userId 提供可控权限的 UserDetailsProvider 测试桩 */
@@ -588,11 +767,14 @@ class AgentGraphDefControllerTest {
                 com.sw.ck.agent.mapper.AgentModelConfigMapper modelConfigMapper,
                 com.sw.ck.agent.mapper.tool.AgentToolInternalConfigMapper internalToolMapper,
                 com.sw.ck.agent.mapper.tool.AgentToolExternalConfigMapper externalToolMapper,
+                com.sw.ck.agent.mapper.AgentGraphExecutionMapper executionMapper,
+                com.sw.ck.agent.mapper.AgentGraphExecutionNodeMapper executionNodeMapper,
                 ChatModelFactory chatModelFactory,
                 AesGcmCipher aesGcmCipher,
                 LoginContextProvider loginContextProvider) {
             return new AgentGraphExecutionServiceImpl(objectMapper, modelConfigMapper,
-                    internalToolMapper, externalToolMapper, chatModelFactory, aesGcmCipher,
+                    internalToolMapper, externalToolMapper, executionMapper,
+                    executionNodeMapper, chatModelFactory, aesGcmCipher,
                     loginContextProvider);
         }
 
@@ -600,6 +782,12 @@ class AgentGraphDefControllerTest {
         public AgentGraphDefController agentGraphDefController(AgentGraphDefService agentGraphDefService,
                                                                AgentGraphExecutionService agentGraphExecutionService) {
             return new AgentGraphDefController(agentGraphDefService, agentGraphExecutionService);
+        }
+
+        @Bean
+        public AgentGraphExecutionController agentGraphExecutionController(
+                AgentGraphExecutionService agentGraphExecutionService) {
+            return new AgentGraphExecutionController(agentGraphExecutionService);
         }
 
         // ==================== JSON ====================

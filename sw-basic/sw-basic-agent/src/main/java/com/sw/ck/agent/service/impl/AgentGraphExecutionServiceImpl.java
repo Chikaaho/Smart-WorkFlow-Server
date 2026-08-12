@@ -1,15 +1,24 @@
 package com.sw.ck.agent.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.agent.dto.AgentGraphExecuteRespDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionDetailDTO;
+import com.sw.ck.agent.dto.AgentGraphExecutionNodeDTO;
 import com.sw.ck.agent.dto.graph.GraphElement;
 import com.sw.ck.agent.dto.graph.ProcessGraph;
 import com.sw.ck.agent.entity.AgentGraphDef;
+import com.sw.ck.agent.entity.AgentGraphExecution;
+import com.sw.ck.agent.entity.AgentGraphExecutionNode;
 import com.sw.ck.agent.entity.AgentModelConfig;
 import com.sw.ck.agent.entity.tool.AgentToolExternalConfig;
 import com.sw.ck.agent.entity.tool.AgentToolInternalConfig;
 import com.sw.ck.agent.mapper.AgentGraphDefMapper;
+import com.sw.ck.agent.mapper.AgentGraphExecutionMapper;
+import com.sw.ck.agent.mapper.AgentGraphExecutionNodeMapper;
 import com.sw.ck.agent.mapper.AgentModelConfigMapper;
 import com.sw.ck.agent.mapper.tool.AgentToolExternalConfigMapper;
 import com.sw.ck.agent.mapper.tool.AgentToolInternalConfigMapper;
@@ -20,10 +29,13 @@ import com.sw.ck.agent.service.AgentGraphExecutionService;
 import com.sw.ck.common.crypto.AesGcmCipher;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.common.service.BaseServiceImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -35,7 +47,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Agent 图执行 Service 实现（M07-F02 Step8 图解释执行引擎第一版）。
+ * Agent 图执行 Service 实现（M07-F02 Step8 图解释执行引擎第一版 + Step12 执行历史
+ * 持久化）。
  * <p>
  * 流程（方案 §5）：加载图定义（requireEntity，NOT_FOUND 语义同 Step7）→ 校验
  * PUBLISHED → 反序列化 graph_json → 执行前校验（方案 §2-D 五项，任一失败即
@@ -45,8 +58,16 @@ import java.util.Set;
  * <b>错误语义</b>：校验失败 → {@link BaseException}（全局惯例 HTTP 200 + body.code）；
  * 运行时错误（条件无匹配且无默认边 / 步数超限 / 模型或工具调用异常）→
  * {@code success=false} + errorMessage 返回（不上抛，与 F01 run() 语义一致）；
- * 不存在的 graphDefId / 跨租户 → NOT_FOUND。本 Step 不落库（不写会话/消息表，
- * 不新建执行日志表），返回值即结果。
+ * 不存在的 graphDefId / 跨租户 → NOT_FOUND。校验失败发生在执行阶段之前，不产生
+ * 执行历史记录（对齐 F04"配置非法不落脏数据"先例）；只有进入执行阶段（解释器实际
+ * 运行）的调用才落库。
+ * </p>
+ * <p>
+ * <b>执行历史持久化（Step12）</b>：执行前建 {@code RUNNING} 执行记录 → 解释器运行
+ * （成功/失败）→ 终态回写（{@code SUCCESS}/{@code FAILED} + 错误分类 + 耗时）+ 节点
+ * 级轨迹明细批量落库——成功与失败两类路径都完整记录（区别于 F04 只写成功分支）。
+ * 节点轨迹由解释器采集（{@code getTraces()}，纯 Java 无 Mapper 依赖），本类负责
+ * 序列化（变量快照 JSON）与落库。
  * </p>
  * <p>
  * <b>LLM 节点模型配置</b>：执行前校验一次性加载图内全部 LLM 节点引用的
@@ -62,10 +83,21 @@ public class AgentGraphExecutionServiceImpl
     /** 状态常量（varchar + String，不建 enum 类，D52 决策） */
     private static final String STATUS_PUBLISHED = "PUBLISHED";
 
+    /** 执行记录状态：执行前建行（Step12） */
+    private static final String STATUS_RUNNING = "RUNNING";
+
+    /** 执行记录状态：执行成功 */
+    private static final String STATUS_SUCCESS = "SUCCESS";
+
+    /** 执行记录状态：执行失败（运行时错误，含第三方异常） */
+    private static final String STATUS_FAILED = "FAILED";
+
     private final ObjectMapper objectMapper;
     private final AgentModelConfigMapper modelConfigMapper;
     private final AgentToolInternalConfigMapper internalToolMapper;
     private final AgentToolExternalConfigMapper externalToolMapper;
+    private final AgentGraphExecutionMapper executionMapper;
+    private final AgentGraphExecutionNodeMapper executionNodeMapper;
     private final ChatModelFactory chatModelFactory;
     private final AesGcmCipher cipher;
     private final LoginContextProvider loginContextProvider;
@@ -81,6 +113,8 @@ public class AgentGraphExecutionServiceImpl
                                           AgentModelConfigMapper modelConfigMapper,
                                           AgentToolInternalConfigMapper internalToolMapper,
                                           AgentToolExternalConfigMapper externalToolMapper,
+                                          AgentGraphExecutionMapper executionMapper,
+                                          AgentGraphExecutionNodeMapper executionNodeMapper,
                                           ChatModelFactory chatModelFactory,
                                           AesGcmCipher cipher,
                                           LoginContextProvider loginContextProvider) {
@@ -88,12 +122,15 @@ public class AgentGraphExecutionServiceImpl
         this.modelConfigMapper = modelConfigMapper;
         this.internalToolMapper = internalToolMapper;
         this.externalToolMapper = externalToolMapper;
+        this.executionMapper = executionMapper;
+        this.executionNodeMapper = executionNodeMapper;
         this.chatModelFactory = chatModelFactory;
         this.cipher = cipher;
         this.loginContextProvider = loginContextProvider;
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AgentGraphExecuteRespDTO execute(Long graphDefId, String input) {
         // 参数校验（对齐 F01 run() 校验惯例：Service 层手动校验）
         if (input == null || input.isBlank()) {
@@ -110,43 +147,209 @@ public class AgentGraphExecutionServiceImpl
             throw new BaseException(CommonErrorCode.PARAM_ERROR, "图数据为空，无法执行");
         }
         // 执行前校验（§2-D）：任一失败即 PARAM_ERROR，不做部分执行；返回校验通过的
-        // 模型配置映射（LLM 节点执行数据，解释器直接消费）
+        // 模型配置映射（LLM 节点执行数据，解释器直接消费）。校验失败发生在执行阶段
+        // 之前 → 不产生执行历史记录（对齐 F04"配置非法不落脏数据"先例）
         Map<Long, AgentModelConfig> modelConfigs = validateForExecution(graph);
+
+        // —— Step12 执行历史：进入执行阶段即建 RUNNING 记录（成功/失败两路径均落库） ——
+        AgentGraphExecution exec = new AgentGraphExecution();
+        exec.setGraphDefId(entity.getId());
+        exec.setGraphDefVersion(entity.getDefVersion());
+        exec.setStatus(STATUS_RUNNING);
+        exec.setInput(input);
+        executionMapper.insert(exec);
+
+        // Step11 死循环防护预算（方案 §2.3）：maxSteps = 2 × 节点数 +
+        // Σ(maxIterations of 所有 LOOP 节点) × 节点数。LOOP config 缺省 maxIterations
+        // 用 DEFAULT_MAX_ITERATIONS 参与预算；无 LOOP 时退化为现状 2 × 节点数（回归
+        // 安全）。给显式循环留足预算（近似最坏情况：每个循环跑满配置次数 × 全图节点
+        // 数），避免"循环刚跑 1-2 次被误判死循环"；意外死循环 / JOIN 挂起死锁仍由
+        // 全局兜底统一拦截（执行步数超限）。
+        List<GraphElement> elements = graph.getElements();
+        int nodeCount = (int) elements.stream()
+                .filter(e -> "node".equals(e.getKind()))
+                .count();
+        int loopBudget = 0;
+        for (GraphElement element : elements) {
+            if ("node".equals(element.getKind())
+                    && AgentGraphInterpreter.NODE_TYPE_LOOP.equals(element.getType())) {
+                loopBudget += maxIterationsOf(element);
+            }
+        }
+        int maxSteps = nodeCount * 2 + loopBudget * nodeCount;
+        AgentGraphInterpreter interpreter = new AgentGraphInterpreter(chatModelFactory,
+                agentToolCallbackFactory, modelConfigs, cipher,
+                loginContextProvider.getTenantId(), maxSteps);
 
         long start = System.currentTimeMillis();
         AgentGraphExecuteRespDTO resp = new AgentGraphExecuteRespDTO();
+        List<AgentGraphInterpreter.NodeExecutionTrace> traces;
+        Throwable failure = null;
         try {
-            List<GraphElement> elements = graph.getElements();
-            int nodeCount = (int) elements.stream()
-                    .filter(e -> "node".equals(e.getKind()))
-                    .count();
-            // Step11 死循环防护预算（方案 §2.3）：maxSteps = 2 × 节点数 +
-            // Σ(maxIterations of 所有 LOOP 节点) × 节点数。LOOP config 缺省 maxIterations
-            // 用 DEFAULT_MAX_ITERATIONS 参与预算；无 LOOP 时退化为现状 2 × 节点数（回归
-            // 安全）。给显式循环留足预算（近似最坏情况：每个循环跑满配置次数 × 全图节点
-            // 数），避免"循环刚跑 1-2 次被误判死循环"；意外死循环 / JOIN 挂起死锁仍由
-            // 全局兜底统一拦截（执行步数超限）。
-            int loopBudget = 0;
-            for (GraphElement element : elements) {
-                if ("node".equals(element.getKind())
-                        && AgentGraphInterpreter.NODE_TYPE_LOOP.equals(element.getType())) {
-                    loopBudget += maxIterationsOf(element);
-                }
-            }
-            int maxSteps = nodeCount * 2 + loopBudget * nodeCount;
-            String output = new AgentGraphInterpreter(chatModelFactory, agentToolCallbackFactory,
-                    modelConfigs, cipher, loginContextProvider.getTenantId(), maxSteps)
-                    .run(graph, input);
+            String output = interpreter.run(graph, input);
             resp.setSuccess(true);
             resp.setOutput(output);
+            traces = interpreter.getTraces();
         } catch (Exception e) {
             // 运行时错误（GraphExecutionException / 模型或工具调用异常）：不上抛，
-            // success=false + 异常摘要（与 F01 run() success=false 语义一致）
+            // success=false + 异常摘要（与 F01 run() success=false 语义一致）；
+            // 节点轨迹在解释器 catch 中已完整留痕，此处读取
+            failure = e;
             resp.setSuccess(false);
             resp.setErrorMessage(summarizeError(e));
+            traces = interpreter.getTraces();
         }
-        resp.setLatencyMs(System.currentTimeMillis() - start);
+        long latency = System.currentTimeMillis() - start;
+        resp.setLatencyMs(latency);
+        resp.setExecutionId(exec.getId());
+
+        // —— 终态回写（成功/失败统一路径；DB 异常位于运行时 catch 之外，上抛不吞） ——
+        exec.setStatus(resp.isSuccess() ? STATUS_SUCCESS : STATUS_FAILED);
+        exec.setResultText(resp.getOutput());
+        exec.setErrorCategory(failure == null ? null : classifyError(failure));
+        exec.setErrorMessage(resp.getErrorMessage());
+        exec.setLatencyMs(latency);
+        executionMapper.updateById(exec);
+
+        // —— 节点级轨迹明细批量落库 ——
+        persistNodeTraces(exec.getId(), traces);
         return resp;
+    }
+
+    // ==================== 执行历史查询（Step12，只读端点） ====================
+
+    @Override
+    public PageResult<AgentGraphExecutionDTO> pageExecutions(PageParam pageParam, Long graphDefId) {
+        // 租户隔离经租户拦截器自动生效；不做用户级过滤（设计器/运维视角的租户内全部执行）
+        LambdaQueryWrapper<AgentGraphExecution> wrapper = Wrappers.<AgentGraphExecution>lambdaQuery()
+                .eq(graphDefId != null, AgentGraphExecution::getGraphDefId, graphDefId)
+                .orderByDesc(AgentGraphExecution::getCreateTime);
+        Page<AgentGraphExecution> page = executionMapper.selectPage(
+                new Page<>(pageParam.getPageNum(), pageParam.getPageSize()), wrapper);
+        return PageResult.of(page.convert(this::toSummaryDTO));
+    }
+
+    @Override
+    public AgentGraphExecutionDetailDTO getExecution(Long executionId) {
+        return toDetailDTO(requireExecution(executionId));
+    }
+
+    @Override
+    public List<AgentGraphExecutionNodeDTO> listExecutionNodes(Long executionId) {
+        // 执行记录存在性校验（selectById 经租户拦截器自动过滤：跨租户/不存在 → 404 语义）
+        requireExecution(executionId);
+        return executionNodeMapper.selectList(
+                        Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                                .eq(AgentGraphExecutionNode::getExecutionId, executionId)
+                                .orderByAsc(AgentGraphExecutionNode::getNodeSeq))
+                .stream().map(this::toNodeDTO).toList();
+    }
+
+    /** 执行记录加载（不存在/跨租户 → NOT_FOUND，同会话查询先例） */
+    private AgentGraphExecution requireExecution(Long executionId) {
+        if (executionId == null) {
+            throw new BaseException(CommonErrorCode.PARAM_ERROR, "executionId 不能为空");
+        }
+        AgentGraphExecution exec = executionMapper.selectById(executionId);
+        if (exec == null) {
+            throw new BaseException(CommonErrorCode.NOT_FOUND, "执行记录不存在");
+        }
+        return exec;
+    }
+
+    // ==================== 执行历史持久化辅助（Step12） ====================
+
+    /**
+     * 节点轨迹批量落库：解释器采集的轨迹（纯 Java 数据载体，方向文档 §5.4）→ 实体
+     * 逐条 insert（与 F04 persistToolCallLogs 同款逐条模式；变量快照序列化为 JSON）。
+     * 空轨迹（理论不可达：进入执行阶段必有节点出队）为空操作。
+     */
+    private void persistNodeTraces(Long executionId,
+                                   List<AgentGraphInterpreter.NodeExecutionTrace> traces) {
+        if (traces == null || traces.isEmpty()) {
+            return;
+        }
+        for (AgentGraphInterpreter.NodeExecutionTrace trace : traces) {
+            AgentGraphExecutionNode node = new AgentGraphExecutionNode();
+            node.setExecutionId(executionId);
+            node.setNodeSeq((int) trace.getNodeSeq());
+            node.setBranchId(trace.getBranchId());
+            node.setNodeId(trace.getNodeId());
+            node.setNodeType(trace.getNodeType());
+            node.setNodeLatencyMs(trace.getNodeLatencyMs());
+            node.setVariableSnapshot(toJson(trace.getVariableSnapshot()));
+            executionNodeMapper.insert(node);
+        }
+    }
+
+    /**
+     * 错误分类（Step12）：沿 cause 链找携带分类的 GraphExecutionException——解释器
+     * 全部运行时抛出点（含第三方异常包装）均已带分类，未找到为理论不可达兜底（UNKNOWN）。
+     */
+    private String classifyError(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof AgentGraphInterpreter.GraphExecutionException gex
+                    && gex.getCategory() != null) {
+                return gex.getCategory();
+            }
+            cur = cur.getCause();
+        }
+        return AgentGraphInterpreter.ERROR_CATEGORY_UNKNOWN;
+    }
+
+    /** 变量表快照序列化（Map<String,String> → JSON；失败理论不可达，兜底 null） */
+    private String toJson(Map<String, String> variables) {
+        if (variables == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(variables);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ==================== DTO 转换（Step12） ====================
+
+    private AgentGraphExecutionDTO toSummaryDTO(AgentGraphExecution exec) {
+        AgentGraphExecutionDTO dto = new AgentGraphExecutionDTO();
+        dto.setId(exec.getId());
+        dto.setGraphDefId(exec.getGraphDefId());
+        dto.setGraphDefVersion(exec.getGraphDefVersion());
+        dto.setStatus(exec.getStatus());
+        dto.setErrorCategory(exec.getErrorCategory());
+        dto.setErrorMessage(exec.getErrorMessage());
+        dto.setLatencyMs(exec.getLatencyMs());
+        dto.setCreateTime(exec.getCreateTime());
+        return dto;
+    }
+
+    private AgentGraphExecutionDetailDTO toDetailDTO(AgentGraphExecution exec) {
+        AgentGraphExecutionDetailDTO dto = new AgentGraphExecutionDetailDTO();
+        dto.setId(exec.getId());
+        dto.setGraphDefId(exec.getGraphDefId());
+        dto.setGraphDefVersion(exec.getGraphDefVersion());
+        dto.setStatus(exec.getStatus());
+        dto.setInput(exec.getInput());
+        dto.setOutput(exec.getResultText());
+        dto.setErrorCategory(exec.getErrorCategory());
+        dto.setErrorMessage(exec.getErrorMessage());
+        dto.setLatencyMs(exec.getLatencyMs());
+        dto.setCreateTime(exec.getCreateTime());
+        dto.setUpdateTime(exec.getUpdateTime());
+        return dto;
+    }
+
+    private AgentGraphExecutionNodeDTO toNodeDTO(AgentGraphExecutionNode node) {
+        AgentGraphExecutionNodeDTO dto = new AgentGraphExecutionNodeDTO();
+        dto.setNodeSeq(node.getNodeSeq());
+        dto.setBranchId(node.getBranchId());
+        dto.setNodeId(node.getNodeId());
+        dto.setNodeType(node.getNodeType());
+        dto.setNodeLatencyMs(node.getNodeLatencyMs());
+        dto.setVariableSnapshot(node.getVariableSnapshot());
+        return dto;
     }
 
     // ==================== 执行前校验（方案 §2-D） ====================
