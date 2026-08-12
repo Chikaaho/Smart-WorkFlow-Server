@@ -21,7 +21,10 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -352,6 +355,214 @@ class AgentGraphInterpreterTest {
         assertThat(output).isEqualTo("发货处理结果");
     }
 
+    // ==================== 用例 13：循环正常退出（Step11 LOOP） ====================
+
+    @Test
+    @DisplayName("用例13: LOOP 循环正常退出 — 第三轮 CONDITION 命中退出关键词走 END，LLM 恰好调用 3 次（maxIterations=3 未超限）")
+    void loop_shouldExitNormallyWhenConditionHitsExitKeyword() {
+        AgentModelConfig config = modelConfig(1L, "sk-loop-exit");
+        // 有状态桩：前两轮输出不含退出关键词（默认边回 LOOP），第三轮输出"退出"命中关键词走 END
+        when(chatModelFactory.build(config, "sk-loop-exit"))
+                .thenReturn(new SequencedChatModel("结果1", "结果2", "退出"));
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 3)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "退出")),
+                edge("e_back", "node_cond", "node_loop", Map.of()));   // 无 keyword = 默认边回 LOOP
+
+        String output = interpreter(Map.of(1L, config), 30).run(graph, "开始循环");
+
+        // 输出 = 第三轮 LLM 输出（END 读默认变量）；恰好 3 次迭代（少迭代或多迭代该断言失败）
+        assertThat(output).isEqualTo("退出");
+        verify(chatModelFactory, times(3)).build(config, "sk-loop-exit");
+    }
+
+    // ==================== 用例 14：循环迭代超限（Step11 LOOP） ====================
+
+    @Test
+    @DisplayName("用例14: LOOP 迭代超限 — 第 3 次到达 LOOP（maxIterations=2）抛 循环迭代次数超限，LLM 恰好执行 2 次")
+    void loop_shouldThrowWhenIterationExceedsMax() {
+        AgentModelConfig config = modelConfig(1L, "sk-loop-over");
+        when(chatModelFactory.build(config, "sk-loop-over")).thenReturn(new StubChatModel("循环体"));
+
+        // LOOP→LLM→(回边直回 LOOP)，无 CONDITION：循环永不退出，靠 LOOP 迭代上限拦截
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 2)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_loop", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 50).run(graph, "进循环"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("循环迭代次数超限: node_loop");
+        // 第 1、2 次到达 LOOP 放行（LLM 各执行一次），第 3 次到达抛错
+        verify(chatModelFactory, times(2)).build(config, "sk-loop-over");
+    }
+
+    // ==================== 用例 15：FORK→JOIN 两分支全执行（Step11 并行） ====================
+
+    @Test
+    @DisplayName("用例15: FORK→JOIN 两分支全执行 — LLM/TOOL 各执行 1 次，JOIN 汇合后 v2 变量保留可读（后验断言）")
+    void forkJoin_shouldExecuteAllBranchesAndMerge() {
+        AgentModelConfig configB1 = modelConfig(1L, "sk-b1");
+        AgentModelConfig configObs = modelConfig(2L, "sk-obs");
+        when(chatModelFactory.build(configB1, "sk-b1")).thenReturn(new StubChatModel("分支1输出"));
+        CapturingChatModel obs = new CapturingChatModel("观察输出");
+        when(chatModelFactory.build(configObs, "sk-obs")).thenReturn(obs);
+        ToolCallback echo = FunctionToolCallback.builder("echo_tool", (String s) -> "分支2输出")
+                .description("回声工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(echo));
+
+        // B1: LLM 写 v1；B2: TOOL 写 v2；JOIN 后置观察节点从 v2 读（证明 v2 写入保留）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_llm_b1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "v1")),
+                node("node_tool_b2", "TOOL", Map.of("toolName", "echo_tool", "outputVar", "v2")),
+                node("node_join", "JOIN", Map.of()),
+                node("node_obs", "LLM", Map.of("agentModelConfigId", 2L, "inputVar", "v2", "outputVar", "v2")),
+                node("node_end", "END", Map.of("inputVar", "v1")),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_llm_b1", Map.of()),
+                edge("e3", "node_fork", "node_tool_b2", Map.of()),
+                edge("e4", "node_llm_b1", "node_join", Map.of()),
+                edge("e5", "node_tool_b2", "node_join", Map.of()),
+                edge("e6", "node_join", "node_obs", Map.of()),
+                edge("e7", "node_obs", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, configB1, 2L, configObs), 30).run(graph, "入参");
+
+        // END 读到 v1（B1 分支输出）；JOIN 后观察节点从 v2 读到 B2 分支输出（v2 保留 =
+        // 两分支全执行并成功汇合）；两个 LLM 各恰好执行 1 次
+        assertThat(output).isEqualTo("分支1输出");
+        assertThat(obs.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("分支2输出");
+        verify(chatModelFactory).build(configB1, "sk-b1");
+        verify(chatModelFactory).build(configObs, "sk-obs");
+    }
+
+    // ==================== 用例 16：并行同变量后写覆盖（Step11 用户决策） ====================
+
+    @Test
+    @DisplayName("用例16: 并行分支同变量后写覆盖 — B1 写 v=A、B2 写 v=B（出边顺序确定），END 读到后推进分支值 B")
+    void forkJoin_sameVariable_shouldLastWriteWin() {
+        AgentModelConfig config = modelConfig(1L, "sk-b1");
+        when(chatModelFactory.build(config, "sk-b1")).thenReturn(new StubChatModel("A"));
+        ToolCallback echo = FunctionToolCallback.builder("echo_tool", (String s) -> "B")
+                .description("回声工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(echo));
+
+        // 出边顺序：B1(LLM 写 v=A) 先于 B2(TOOL 写 v=B)；FIFO 交替推进 = B1 先写、B2 后写覆盖
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_llm_b1", "LLM", Map.of("agentModelConfigId", 1L, "outputVar", "v")),
+                node("node_tool_b2", "TOOL", Map.of("toolName", "echo_tool", "outputVar", "v")),
+                node("node_join", "JOIN", Map.of()),
+                node("node_end", "END", Map.of("inputVar", "v")),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_llm_b1", Map.of()),
+                edge("e3", "node_fork", "node_tool_b2", Map.of()),
+                edge("e4", "node_llm_b1", "node_join", Map.of()),
+                edge("e5", "node_tool_b2", "node_join", Map.of()),
+                edge("e6", "node_join", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config), 20).run(graph, "入参");
+
+        // 用户已决策：并行同变量 = 最后写入覆盖（不拦截不告警）；确定性出边顺序 → 后推进
+        // 分支（B2）的 "B" 覆盖先推进分支（B1）的 "A"
+        assertThat(output).isEqualTo("B");
+    }
+
+    // ==================== 用例 17：JOIN 死锁兜底（Step11 全局步数） ====================
+
+    @Test
+    @DisplayName("用例17: JOIN 死锁兜底 — B1 挂起等待、B2 经 CONDITION 回边死循环永不达 JOIN → 全局步数超限抛错")
+    void joinDeadlock_shouldStopAtStepLimit() {
+        AgentModelConfig config = modelConfig(1L, "sk-loop2");
+        when(chatModelFactory.build(config, "sk-loop2")).thenReturn(new StubChatModel("死循环"));
+
+        // JOIN 静态入边 2 条：B1（FORK→JOIN 直达）与 B2（CONDITION 关键词边 →JOIN）。
+        // B1 先到达（计数 1 < 2 → 挂起等待）；B2 经 CONDITION 默认边回 LLM 死循环（匹配
+        // 文本"入参"永不含关键词 exit → 永不达 JOIN）→ 全局步数超限兜底（无 LOOP 不放大
+        // 预算：沿用 2 × 节点数 = 2 × 6 = 12）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_join", "JOIN", Map.of()),
+                node("node_llm_b2", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_join", Map.of()),
+                edge("e3", "node_fork", "node_llm_b2", Map.of()),
+                edge("e4", "node_llm_b2", "node_cond", Map.of()),
+                edge("e5", "node_cond", "node_join", Map.of("keyword", "exit")),
+                edge("e6", "node_cond", "node_llm_b2", Map.of()),   // 默认边回 LLM = 死循环
+                edge("e7", "node_join", "node_end", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 12).run(graph, "入参"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("执行步数超限");
+    }
+
+    // ==================== 用例 18：END 早到终止全部（Step11 并行） ====================
+
+    @Test
+    @DisplayName("用例18: END 早到终止全部 — B1 直达 END 即返回，B2 分支不再执行（LLM 零调用）")
+    void endEarly_shouldTerminateAllBranches() {
+        AgentModelConfig config = modelConfig(1L, "sk-never");
+        when(chatModelFactory.build(config, "sk-never")).thenReturn(new StubChatModel("不应执行"));
+
+        // 出边顺序：B1(→END) 先于 B2(→LLM)；END 一经处理立即返回，B2 分支永不执行
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_end", "END", Map.of()),
+                node("node_llm_b2", "LLM", Map.of("agentModelConfigId", 1L)),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_end", Map.of()),
+                edge("e3", "node_fork", "node_llm_b2", Map.of()));
+
+        String output = interpreter(Map.of(1L, config), 10).run(graph, "原始输入");
+
+        // END 读默认变量（无任何节点写入）→ 返回入参原值；B2 分支 LLM 从未被 build
+        assertThat(output).isEqualTo("原始输入");
+        verify(chatModelFactory, never()).build(any(AgentModelConfig.class), anyString());
+    }
+
+    // ==================== 用例 19：预算退化回归（Step11 无 LOOP 旧图） ====================
+
+    @Test
+    @DisplayName("用例19: 预算公式退化回归 — 旧图（无 LOOP）自环仍由 2×节点数预算兜底（行为与现状一致）")
+    void legacyGraphSelfLoop_shouldStillHitStepLimit() {
+        AgentModelConfig config = modelConfig(1L, "sk-legacy-loop");
+        when(chatModelFactory.build(config, "sk-legacy-loop")).thenReturn(new StubChatModel("循环输出"));
+
+        // 仿用例6：START + LLM 自环，无 LOOP/END → 节点数 2 × 2 = 4 步后超限抛错
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e_loop", "node_llm", "node_llm", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 4).run(graph, "进来就出不去"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("执行步数超限");
+    }
+
     // ==================== 内部辅助 ====================
 
     private AgentGraphInterpreter interpreter(Map<Long, AgentModelConfig> modelConfigs, int maxSteps) {
@@ -421,6 +632,23 @@ class AgentGraphInterpreterTest {
 
         @Override
         public ChatResponse call(Prompt prompt) {
+            return new ChatResponse(List.of(new Generation(new AssistantMessage(reply))));
+        }
+    }
+
+    /** 按调用顺序返回固定序列回复的 ChatModel 桩（超出序列后重复最后一个，用于循环退出用例） */
+    static class SequencedChatModel implements ChatModel {
+        private final String[] replies;
+        private int index = 0;
+
+        SequencedChatModel(String... replies) {
+            this.replies = replies;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            String reply = replies[Math.min(index, replies.length - 1)];
+            index++;
             return new ChatResponse(List.of(new Generation(new AssistantMessage(reply))));
         }
     }

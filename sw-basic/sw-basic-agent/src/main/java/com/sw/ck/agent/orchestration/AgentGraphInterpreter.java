@@ -61,8 +61,19 @@ import java.util.Map;
  * 用于当次 {@code ChatModelFactory.build}，finally 中置 null，不进日志/异常/响应。
  * </p>
  * <p>
- * <b>死循环防护</b>：{@code maxSteps}（由调用方按 elements 节点数 × 2 计算）硬上限，
+ * <b>死循环防护</b>：{@code maxSteps}（由调用方注入，见执行 Service 预算公式）硬上限，
  * 超限抛 {@link GraphExecutionException}，不无限执行。
+ * </p>
+ * <p>
+ * <b>并行/循环执行模型（Step11）</b>：主循环从"单指针 while"改为<b>多活跃执行点</b>
+ * 集合交替推进（FIFO 取队首活跃点执行一步，产出 0/1/N 个后继活跃点；单线程交错 =
+ * 逻辑并发，非线程级并行）。LOOP 节点（config.{@code maxIterations}，缺省
+ * {@value #DEFAULT_MAX_ITERATIONS}）按节点 id 迭代计数，超限抛"循环迭代次数超限"；
+ * FORK 节点将当前活跃点替换为全部出边分支（出边在 elements 中的出现顺序 = 确定性
+ * 分支顺序）；JOIN 节点按静态入边数聚合，未达入边数挂起等待、达到后合成单个活跃点
+ * 沿唯一出边继续；任一活跃点到达 END 即<b>终止全部执行</b>并返回该 END 输出。
+ * 并行分支写同一变量名 = <b>最后写入覆盖</b>（用户已决策，不拦截不告警）——变量表仍
+ * 为单一共享 {@code Map}，单线程推进无并发安全问题。
  * </p>
  *
  * @see GraphExecutionException
@@ -86,6 +97,15 @@ public class AgentGraphInterpreter {
     /** 条件分支节点（纯路由点，按出边 config.keyword 子串匹配选路） */
     public static final String NODE_TYPE_CONDITION = "CONDITION";
 
+    /** 循环节点（循环头：按节点 id 迭代计数，config.maxIterations 超限抛错；唯一出边进循环体） */
+    public static final String NODE_TYPE_LOOP = "LOOP";
+
+    /** 并行扇出节点（出边 ≥ 2，每条出边一个分支，全部分支执行后于 JOIN 汇合） */
+    public static final String NODE_TYPE_FORK = "FORK";
+
+    /** 汇合节点（入边 ≥ 2，静态入边数全部到达后合成单个活跃点继续，出边唯一） */
+    public static final String NODE_TYPE_JOIN = "JOIN";
+
     // ==================== 节点 config 键（本 Step 定义的执行契约） ====================
 
     /** LLM 节点 config 键：模型配置 id（Long） */
@@ -103,12 +123,21 @@ public class AgentGraphInterpreter {
     /** LLM/TOOL 节点 config 键：结果写入的变量名（String，缺失/空白 = 默认变量） */
     public static final String CONFIG_KEY_OUTPUT_VAR = "outputVar";
 
+    /** LOOP 节点 config 键：迭代上限（Integer，可选，缺省 {@value #DEFAULT_MAX_ITERATIONS}；<1 由执行前校验拦截） */
+    public static final String CONFIG_KEY_MAX_ITERATIONS = "maxIterations";
+
     /**
      * 默认变量名（旧图语义锚点）：graph 入参写入该变量；未指定变量名的节点读写该
      * 变量（Step8 单一 currentText 语义）；CONDITION/END 未指定 inputVar 时分别基于
      * 该变量匹配/取最终输出。零迁移关键：旧图无变量名字段，全部落此变量。
      */
     public static final String DEFAULT_VARIABLE_NAME = "input";
+
+    /**
+     * LOOP 节点默认迭代上限：config.maxIterations 缺失时使用（执行前校验保证显式值 ≥ 1；
+     * 步数预算公式对缺省 LOOP 同用此常量）。
+     */
+    public static final int DEFAULT_MAX_ITERATIONS = 10;
 
     // ==================== 依赖（纯构造注入，无 Spring 注解，可 mock 单测） ====================
 
@@ -150,23 +179,41 @@ public class AgentGraphInterpreter {
     }
 
     /**
-     * 解释执行整图：START → 按 elements 顺序走节点/边 → END，返回最终输出文本。
+     * 解释执行整图：从唯一 START 出发维护一组活跃执行点，每轮取队首活跃点执行一步
+     * （FORK 扇出多分支并存、JOIN 聚合、LOOP 迭代计数），任一活跃点到达 END 即终止
+     * 全部执行并返回该 END 输出。
      *
      * @param graph 已发布图（Step7 产物，config 不透明字段按本类契约消费）
      * @param input 请求入参文本（写入默认变量 {@value #DEFAULT_VARIABLE_NAME}）
-     * @return END 节点处最终输出（END config.inputVar 指定变量，缺失/空白 = 默认变量）
+     * @return 最先到达的 END 节点处最终输出（END config.inputVar 指定变量，缺失/空白 = 默认变量）
      * @throws GraphExecutionException 条件分支无匹配且无默认边 / 未定义变量引用 /
-     *                                 步数超限 / 拓扑非法等运行时错误
+     *                                 步数超限 / 循环迭代超限 / 拓扑非法等运行时错误
      */
     public String run(ProcessGraph graph, String input) {
         List<GraphElement> elements = graph.getElements();
-        GraphElement current = findStart(elements);
         // 命名变量表（Step10）：初始仅含默认变量（= 请求入参）。未指定变量名的节点
         // 读写默认变量，旧图（无变量名字段）行为与 Step8 单一 currentText 语义一致。
+        // 并行分支写同一变量名 = 最后写入覆盖（用户已决策，不拦截不告警；单线程交错
+        // 推进下即按图推进顺序覆盖，行为可预期）。
         Map<String, String> variables = new HashMap<>();
         variables.put(DEFAULT_VARIABLE_NAME, input);
+        // 活跃执行点集合（Step11）：FORK 扇出后多分支并存，每轮取队首活跃点执行一步，
+        // 产出 0/1/N 个后继活跃点（FIFO 交替推进，确定性顺序；逻辑并发非线程级并行）。
+        List<String> activeNodeIds = new ArrayList<>();
+        activeNodeIds.add(findStart(elements).getId());
+        // LOOP 迭代计数（按节点 id）与 JOIN 到达计数（按节点 id）
+        Map<String, Integer> loopIterationCounts = new HashMap<>();
+        Map<String, Integer> joinArrivalCounts = new HashMap<>();
         int steps = 0;
-        while (!NODE_TYPE_END.equals(current.getType())) {
+        while (!activeNodeIds.isEmpty()) {
+            String currentId = activeNodeIds.remove(0);
+            GraphElement current = findNode(currentId, elements);
+            // 任一活跃点到达 END → 立即终止全部执行（其余分支停止推进），返回该 END
+            // 节点 config.inputVar 读取值（缺失/空白 = 默认变量，Step8 语义）
+            if (NODE_TYPE_END.equals(current.getType())) {
+                return readVariable(current, variables, CONFIG_KEY_INPUT_VAR);
+            }
+            // 全局步数上限（跨所有活跃点累计）：死循环 / JOIN 挂起死锁统一由超限兜底
             if (++steps > maxSteps) {
                 throw new GraphExecutionException("执行步数超限，图可能存在环路");
             }
@@ -178,14 +225,39 @@ public class AgentGraphInterpreter {
                 // START/CONDITION 为纯路由点：START 不写变量（入参已在初始变量表），
                 // CONDITION 只读匹配文本（inputVar）不写变量
                 case NODE_TYPE_START, NODE_TYPE_CONDITION -> { }
+                case NODE_TYPE_LOOP -> {
+                    // 按节点 id 迭代计数 +1，超限抛错；否则沿唯一出边进循环体
+                    int iteration = loopIterationCounts.merge(current.getId(), 1, Integer::sum);
+                    if (iteration > maxIterationsOf(current)) {
+                        throw new GraphExecutionException("循环迭代次数超限: " + current.getId());
+                    }
+                }
+                case NODE_TYPE_FORK -> { /* 扇出：无动作，路由段按全部出边产出多活跃点 */ }
+                case NODE_TYPE_JOIN -> {
+                    // 到达计数 +1；未达静态入边数 → 本活跃点挂起（不入队），等待其余分支；
+                    // 达到 → 合成单个活跃点沿唯一出边继续（路由段统一处理）
+                    int arrived = joinArrivalCounts.merge(current.getId(), 1, Integer::sum);
+                    if (arrived < incomingEdgeCount(current, elements)) {
+                        continue;
+                    }
+                }
                 default -> throw new GraphExecutionException(
                         "不支持的节点类型: " + current.getType() + "（节点 " + current.getId() + "）");
             }
-            current = findNode(nextNodeId(current, elements, variables), elements);
+            // 后继路由：FORK 将当前活跃点替换为其全部出边分支（确定性顺序 = 出边在
+            // elements 中的出现顺序）；其余节点单后继（CONDITION 单选一；LOOP/JOIN/
+            // START/LLM/TOOL 出边唯一约束由 nextNodeId 强制）
+            if (NODE_TYPE_FORK.equals(current.getType())) {
+                for (GraphElement edge : outgoingEdges(current, elements)) {
+                    activeNodeIds.add(edge.getTarget());
+                }
+            } else {
+                activeNodeIds.add(nextNodeId(current, elements, variables));
+            }
         }
-        // END 节点：config.inputVar 指定最终输出取自的变量（缺失/空白 = 默认变量，
-        // Step8 语义：END 时 currentText 即为最终 output）
-        return readVariable(current, variables, CONFIG_KEY_INPUT_VAR);
+        // 活跃点耗尽且无 END 到达（如 JOIN 静态入边数无法由当前路径满足 → 挂起后无后继）。
+        // 执行前校验只保证 END 可达、不保证汇合可满足，此处按图设计缺陷显式抛错，不静默返回。
+        throw new GraphExecutionException("所有执行点已终止但未到达 END 节点（JOIN 汇合入边数无法满足）");
     }
 
     // ==================== LLM 节点 ====================
@@ -312,7 +384,8 @@ public class AgentGraphInterpreter {
     /**
      * 确定下一节点 id：CONDITION 节点按 §2-C 关键词子串匹配（elements 原始顺序即优先级，
      * 不排序），匹配文本 = CONDITION 节点 config.{@code inputVar} 指定的变量值（缺失/
-     * 空白 = 默认变量，Step10 语义）；其余节点取唯一出边。
+     * 空白 = 默认变量，Step10 语义）；其余节点（含 LOOP/JOIN，出边唯一约束保持生效）
+     * 取唯一出边。
      *
      * @throws GraphExecutionException 条件无匹配且无默认边 / 默认边不唯一 / 出边数量非法 /
      *                                 未定义变量引用
@@ -342,7 +415,8 @@ public class AgentGraphInterpreter {
             }
             throw new GraphExecutionException("条件分支默认边不唯一: " + current.getId());
         }
-        // 非条件节点：必须且只能有一条出边（START/END/LLM/TOOL）
+        // 非条件节点：必须且只能有一条出边（START/END/LLM/TOOL/LOOP/JOIN；FORK 不
+        // 经此方法，由 run() 路由段按全部出边扇出）
         if (edges.isEmpty()) {
             throw new GraphExecutionException("节点没有出边，无法继续执行: " + current.getId());
         }
@@ -377,6 +451,34 @@ public class AgentGraphInterpreter {
             }
         }
         return edges;
+    }
+
+    /** 当前节点的入边数（JOIN 静态入边数 = 汇合分支数），按 target == 节点 id 统计 */
+    private int incomingEdgeCount(GraphElement node, List<GraphElement> elements) {
+        int count = 0;
+        for (GraphElement element : elements) {
+            if ("edge".equals(element.getKind()) && node.getId().equals(element.getTarget())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * LOOP 节点迭代上限：config.{@value #CONFIG_KEY_MAX_ITERATIONS}（Number → int；
+     * 缺失/非数值 = 默认 {@value #DEFAULT_MAX_ITERATIONS}；<1 由执行前校验拦截，若被
+     * 直接构造绕过校验，首次到达（计数 1）即触发"循环迭代次数超限"，fail-fast 不静默）。
+     */
+    private int maxIterationsOf(GraphElement node) {
+        Map<String, Object> config = node.getConfig();
+        if (config == null) {
+            return DEFAULT_MAX_ITERATIONS;
+        }
+        Object value = config.get(CONFIG_KEY_MAX_ITERATIONS);
+        if (!(value instanceof Number n)) {
+            return DEFAULT_MAX_ITERATIONS;
+        }
+        return n.intValue();
     }
 
     // ==================== 内部辅助 ====================

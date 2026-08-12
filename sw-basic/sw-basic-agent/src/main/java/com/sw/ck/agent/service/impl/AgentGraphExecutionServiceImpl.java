@@ -116,12 +116,26 @@ public class AgentGraphExecutionServiceImpl
         long start = System.currentTimeMillis();
         AgentGraphExecuteRespDTO resp = new AgentGraphExecuteRespDTO();
         try {
-            int nodeCount = (int) graph.getElements().stream()
+            List<GraphElement> elements = graph.getElements();
+            int nodeCount = (int) elements.stream()
                     .filter(e -> "node".equals(e.getKind()))
                     .count();
-            // §2-E 死循环防护：maxSteps = 节点数 × 2（经验值，允许条件分支来回但不允许无限绕圈）
+            // Step11 死循环防护预算（方案 §2.3）：maxSteps = 2 × 节点数 +
+            // Σ(maxIterations of 所有 LOOP 节点) × 节点数。LOOP config 缺省 maxIterations
+            // 用 DEFAULT_MAX_ITERATIONS 参与预算；无 LOOP 时退化为现状 2 × 节点数（回归
+            // 安全）。给显式循环留足预算（近似最坏情况：每个循环跑满配置次数 × 全图节点
+            // 数），避免"循环刚跑 1-2 次被误判死循环"；意外死循环 / JOIN 挂起死锁仍由
+            // 全局兜底统一拦截（执行步数超限）。
+            int loopBudget = 0;
+            for (GraphElement element : elements) {
+                if ("node".equals(element.getKind())
+                        && AgentGraphInterpreter.NODE_TYPE_LOOP.equals(element.getType())) {
+                    loopBudget += maxIterationsOf(element);
+                }
+            }
+            int maxSteps = nodeCount * 2 + loopBudget * nodeCount;
             String output = new AgentGraphInterpreter(chatModelFactory, agentToolCallbackFactory,
-                    modelConfigs, cipher, loginContextProvider.getTenantId(), nodeCount * 2)
+                    modelConfigs, cipher, loginContextProvider.getTenantId(), maxSteps)
                     .run(graph, input);
             resp.setSuccess(true);
             resp.setOutput(output);
@@ -141,7 +155,13 @@ public class AgentGraphExecutionServiceImpl
      * 执行前最小校验（非完整拓扑校验器，方案 §3 已裁定）：
      * ①PUBLISHED（调用方已校验）②唯一 START + 至少一个 END 可达 ③LLM 节点
      * agentModelConfigId 可解析到租户内 AgentModelConfig ④TOOL 节点 toolName 精确
-     * 匹配 enabled=1 白名单 ⑤CONDITION 出边默认边唯一。
+     * 匹配 enabled=1 白名单 ⑤CONDITION 出边默认边唯一 ⑥FORK 出边数 ≥ 2 ⑦JOIN 入边数
+     * ≥ 2 ⑧LOOP maxIterations（存在时）≥ 1。
+     * <p>
+     * 不做"循环体可达退出路径"静态分析（方案 §2.4 判断非必要：运行时已有 maxIterations
+     * + 全局步数兜底双层防护，且循环体路径依赖动态变量匹配易误报）。既有 BFS visited
+     * 去重天然容忍环。
+     * </p>
      *
      * @return 图内全部 LLM 节点引用的模型配置（id → 配置）
      */
@@ -204,6 +224,29 @@ public class AgentGraphExecutionServiceImpl
                                 "条件分支默认边不唯一: " + node.getId());
                     }
                 }
+                case AgentGraphInterpreter.NODE_TYPE_FORK -> {
+                    // ⑥ 扇出分支数 ≥ 2（每出边一个分支；少于 2 无并行语义）
+                    if (outgoingEdges(node, elements).size() < 2) {
+                        throw new BaseException(CommonErrorCode.PARAM_ERROR,
+                                "FORK 节点扇出分支数必须 ≥ 2: " + node.getId());
+                    }
+                }
+                case AgentGraphInterpreter.NODE_TYPE_JOIN -> {
+                    // ⑦ 汇合入边数 ≥ 2（无汇合语义的单入边 JOIN 无意义）
+                    if (incomingEdges(node, elements).size() < 2) {
+                        throw new BaseException(CommonErrorCode.PARAM_ERROR,
+                                "JOIN 节点汇合入边数必须 ≥ 2: " + node.getId());
+                    }
+                }
+                case AgentGraphInterpreter.NODE_TYPE_LOOP -> {
+                    // ⑧ maxIterations 存在且 <1 → 非法（缺失用默认 10，不报错）
+                    Object maxIterations = configValue(node,
+                            AgentGraphInterpreter.CONFIG_KEY_MAX_ITERATIONS);
+                    if (maxIterations instanceof Number n && n.intValue() < 1) {
+                        throw new BaseException(CommonErrorCode.PARAM_ERROR,
+                                "LOOP 节点 maxIterations 必须 ≥ 1: " + node.getId());
+                    }
+                }
                 default -> { /* START/END 及其他：无执行前校验 */ }
             }
         }
@@ -224,6 +267,29 @@ public class AgentGraphExecutionServiceImpl
             }
         }
         return edges;
+    }
+
+    /** 当前节点的入边列表（kind=edge 且 target == 节点 id），按 elements 出现顺序 */
+    private List<GraphElement> incomingEdges(GraphElement node, List<GraphElement> elements) {
+        List<GraphElement> edges = new ArrayList<>();
+        for (GraphElement element : elements) {
+            if ("edge".equals(element.getKind()) && node.getId().equals(element.getTarget())) {
+                edges.add(element);
+            }
+        }
+        return edges;
+    }
+
+    /**
+     * LOOP 节点迭代上限（预算公式用）：config.maxIterations（Number → int；缺失/非数值 =
+     * 默认 {@link AgentGraphInterpreter#DEFAULT_MAX_ITERATIONS}；<1 已被执行前校验拦截）。
+     */
+    private int maxIterationsOf(GraphElement node) {
+        Object value = configValue(node, AgentGraphInterpreter.CONFIG_KEY_MAX_ITERATIONS);
+        if (!(value instanceof Number n)) {
+            return AgentGraphInterpreter.DEFAULT_MAX_ITERATIONS;
+        }
+        return n.intValue();
     }
 
     /** 从唯一 START 沿边 BFS，判断是否存在可达的 END 节点 */

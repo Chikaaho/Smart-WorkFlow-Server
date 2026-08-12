@@ -500,6 +500,134 @@ class AgentGraphExecutionServiceImplTest {
         assertThat(resp.getLatencyMs()).isNotNegative();
     }
 
+    // ==================== 用例 15：全链路循环图（Step11 LOOP） ====================
+
+    @Test
+    @DisplayName("用例15: 全链路循环图（LOOP→LLM→CONDITION 回边，graph_json 序列化往返）→ success=true + 循环退出输出")
+    void execute_loopGraph_shouldSucceed() {
+        Long modelId = insertModelConfig("openai-6", "sk-loop");
+        // 三次 build 依次返回：前两轮无退出关键词 → 默认边回 LOOP；第三轮"退出" → 走 END
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("结果1"), new StubChatModel("结果2"), new StubChatModel("退出"));
+        // 与解释器单测同构的循环图（经 graph_json 序列化往返，验证不透明 config 键 maxIterations 零迁移）
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 3)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "退出")),
+                edge("e_back", "node_cond", "node_loop", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "开始");
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getOutput()).isEqualTo("退出");
+        assertThat(resp.getErrorMessage()).isNull();
+    }
+
+    // ==================== 用例 16：全链路并行图（Step11 FORK→JOIN） ====================
+
+    @Test
+    @DisplayName("用例16: 全链路并行图（FORK→JOIN 两分支全执行并汇合）→ success=true + 汇合输出")
+    void execute_forkJoinGraph_shouldSucceed() {
+        Long modelId = insertModelConfig("openai-7", "sk-b1");
+        insertInternalTool("echo_tool", 1);
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("分支1输出"));
+        ToolCallback echo = FunctionToolCallback.builder("echo_tool", (String s) -> "分支2输出")
+                .description("回声工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(echo));
+
+        // B1: LLM 写 v1；B2: TOOL 写 v2；JOIN 汇合后 END 从 v1 取最终输出
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_llm_b1", "LLM", Map.of("agentModelConfigId", modelId, "outputVar", "v1")),
+                node("node_tool_b2", "TOOL", Map.of("toolName", "echo_tool", "outputVar", "v2")),
+                node("node_join", "JOIN", Map.of()),
+                node("node_end", "END", Map.of("inputVar", "v1")),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_llm_b1", Map.of()),
+                edge("e3", "node_fork", "node_tool_b2", Map.of()),
+                edge("e4", "node_llm_b1", "node_join", Map.of()),
+                edge("e5", "node_tool_b2", "node_join", Map.of()),
+                edge("e6", "node_join", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参文本");
+
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(resp.getOutput()).isEqualTo("分支1输出");
+        assertThat(resp.getErrorMessage()).isNull();
+    }
+
+    // ==================== 用例 17：FORK 出边 <2 → 执行前 PARAM_ERROR ====================
+
+    @Test
+    @DisplayName("用例17: FORK 节点仅 1 条出边 → 执行前 PARAM_ERROR 扇出分支数必须 ≥ 2")
+    void execute_forkWithSingleOutEdge_shouldThrowParamError() {
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_fork", "FORK", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_fork", Map.of()),
+                edge("e2", "node_fork", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        assertThatThrownBy(() -> service.execute(id, "文本"))
+                .isInstanceOf(BaseException.class)
+                .hasMessageContaining("FORK 节点扇出分支数必须 ≥ 2")
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.PARAM_ERROR.getCode()));
+    }
+
+    // ==================== 用例 18：JOIN 入边 <2 → 执行前 PARAM_ERROR ====================
+
+    @Test
+    @DisplayName("用例18: JOIN 节点仅 1 条入边 → 执行前 PARAM_ERROR 汇合入边数必须 ≥ 2")
+    void execute_joinWithSingleInEdge_shouldThrowParamError() {
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_join", "JOIN", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_join", Map.of()),
+                edge("e2", "node_join", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        assertThatThrownBy(() -> service.execute(id, "文本"))
+                .isInstanceOf(BaseException.class)
+                .hasMessageContaining("JOIN 节点汇合入边数必须 ≥ 2")
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.PARAM_ERROR.getCode()));
+    }
+
+    // ==================== 用例 19：LOOP maxIterations <1 → 执行前 PARAM_ERROR ====================
+
+    @Test
+    @DisplayName("用例19: LOOP maxIterations=0 → 执行前 PARAM_ERROR maxIterations 必须 ≥ 1")
+    void execute_loopWithZeroMaxIterations_shouldThrowParamError() {
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 0)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        assertThatThrownBy(() -> service.execute(id, "文本"))
+                .isInstanceOf(BaseException.class)
+                .hasMessageContaining("LOOP 节点 maxIterations 必须 ≥ 1")
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.PARAM_ERROR.getCode()));
+    }
+
     // ==================== 内部辅助 ====================
 
     /** 创建 → 覆盖图 → 发布，返回已发布图 id */
