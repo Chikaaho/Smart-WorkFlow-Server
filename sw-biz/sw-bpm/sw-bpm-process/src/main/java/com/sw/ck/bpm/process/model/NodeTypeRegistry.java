@@ -15,6 +15,14 @@ import java.util.Map;
  * 新增节点类型只需在 {@link #registerDefaults()} 加一条注册项，
  * 校验器（{@code GraphValidator}）无需改动。
  * </p>
+ * <p>
+ * 完整注册骨架（M04-F08-01 BPM 可插拔机制）：除已落地可翻译的
+ * START/END/APPROVAL 三类外，预留条件/网关类型注册位（CONDITION、
+ * EXCLUSIVE_GATEWAY、PARALLEL_GATEWAY、JOIN_GATEWAY），
+ * 供后续新增节点类型时仅注册即被校验器识别。
+ * 预留位类型当前无对应翻译器，翻译器（{@code GraphToBpmnTranslator}）
+ * 遇到未注册翻译器的类型按既有语义 warn + skip。
+ * </p>
  * <p>线程安全：注册表在 {@code @PostConstruct} 中一次性填充，此后只读。</p>
  */
 @Component
@@ -36,6 +44,20 @@ public class NodeTypeRegistry {
 
         // APPROVAL: 1 入 / 1 出
         register("APPROVAL", new NodeTypeSpec(1, 1, 1, 1, false, true));
+
+        // ---- 预留位（完整注册骨架，暂未注册翻译器，仅供校验器识别） ----
+
+        // CONDITION 条件判断节点: 1 入 / 1 出（串行条件，单进单出）
+        register("CONDITION", new NodeTypeSpec(1, 1, 1, 1, false, true));
+
+        // EXCLUSIVE_GATEWAY 排他网关: 1 入 / 2..N 出（单选分支）
+        register("EXCLUSIVE_GATEWAY", new NodeTypeSpec(1, 1, 2, UNLIMITED, false, true));
+
+        // PARALLEL_GATEWAY 并行网关: 1 入 / 2..N 出（并行扇出）
+        register("PARALLEL_GATEWAY", new NodeTypeSpec(1, 1, 2, UNLIMITED, false, true));
+
+        // JOIN_GATEWAY 汇合网关: 2..N 入 / 1 出（分支汇合）
+        register("JOIN_GATEWAY", new NodeTypeSpec(2, UNLIMITED, 1, 1, false, true));
 
         log.info("NodeTypeRegistry initialized with {} node types", registry.size());
     }
