@@ -58,18 +58,13 @@ public class StorageController {
     }
 
     /**
-     * 文件列表（分页）。
+     * 文件列表（分页，create_time 倒序；数据范围纳管入口，见 {@code StorageFileService#pageFiles}）。
      */
     @GetMapping
     public R<Page<StorageFile>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
-        Page<StorageFile> pageResult = storageFileService.page(
-                new Page<>(page, size),
-                storageFileService.lambdaQuery()
-                        .orderByDesc(StorageFile::getCreateTime)
-                        .getWrapper());
-        return R.ok(pageResult);
+        return R.ok(storageFileService.pageFiles(page, size));
     }
 
     /**

@@ -6,18 +6,23 @@ import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.spi.UserDetailsProvider;
 import com.sw.ck.system.entity.SysMenu;
 import com.sw.ck.system.entity.SysRole;
+import com.sw.ck.system.entity.SysRoleDept;
 import com.sw.ck.system.entity.SysRoleMenu;
 import com.sw.ck.system.entity.SysUser;
 import com.sw.ck.system.entity.SysUserRole;
 import com.sw.ck.system.mapper.SysMenuMapper;
+import com.sw.ck.system.mapper.SysRoleDeptMapper;
 import com.sw.ck.system.mapper.SysRoleMapper;
 import com.sw.ck.system.mapper.SysRoleMenuMapper;
 import com.sw.ck.system.mapper.SysUserRoleMapper;
 import com.sw.ck.system.service.SysUserService;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -28,27 +33,47 @@ import java.util.stream.Collectors;
  * permissions = superAdmin 时为空数组（旁路），否则经 sys_role_menu→sys_menu 取
  * menu_type=2 的 permission 标识。
  * </p>
+ * <p>
+ * dataScope = 用户全部已启用角色 dataScope 的最宽档（多角色取最宽，排序按枚举名：
+ * ALL &gt; DEPT_AND_CHILD &gt; CUSTOM &gt; DEPT &gt; SELF；任一角授予"本部门及以下"
+ * 宽于单点自定义集合）。有效档为 CUSTOM 时，customDeptIds = 该用户全部 CUSTOM 角色
+ * 经 sys_role_dept 关联部门的并集；其余档位 customDeptIds 置空。
+ * </p>
  */
 public class UserDetailsProviderImpl implements UserDetailsProvider {
 
     private static final String SUPER_ADMIN_ROLE_CODE = "superadmin";
+
+    /**
+     * 数据范围宽窄排序（按枚举名比较，不按 ordinal 猜测）：
+     * ALL > DEPT_AND_CHILD > CUSTOM > DEPT > SELF。
+     */
+    private static final Map<DataScope, Integer> SCOPE_RANK = Map.of(
+            DataScope.ALL, 5,
+            DataScope.DEPT_AND_CHILD, 4,
+            DataScope.CUSTOM, 3,
+            DataScope.DEPT, 2,
+            DataScope.SELF, 1);
 
     private final SysUserService sysUserService;
     private final SysUserRoleMapper sysUserRoleMapper;
     private final SysRoleMapper sysRoleMapper;
     private final SysRoleMenuMapper sysRoleMenuMapper;
     private final SysMenuMapper sysMenuMapper;
+    private final SysRoleDeptMapper sysRoleDeptMapper;
 
     public UserDetailsProviderImpl(SysUserService sysUserService,
                                    SysUserRoleMapper sysUserRoleMapper,
                                    SysRoleMapper sysRoleMapper,
                                    SysRoleMenuMapper sysRoleMenuMapper,
-                                   SysMenuMapper sysMenuMapper) {
+                                   SysMenuMapper sysMenuMapper,
+                                   SysRoleDeptMapper sysRoleDeptMapper) {
         this.sysUserService = sysUserService;
         this.sysUserRoleMapper = sysUserRoleMapper;
         this.sysRoleMapper = sysRoleMapper;
         this.sysRoleMenuMapper = sysRoleMenuMapper;
         this.sysMenuMapper = sysMenuMapper;
+        this.sysRoleDeptMapper = sysRoleDeptMapper;
     }
 
     @Override
@@ -77,6 +102,7 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
 
         List<String> roleCodes;
         boolean superAdmin;
+        List<SysRole> roles = Collections.emptyList();
 
         if (userRoles.isEmpty()) {
             roleCodes = Collections.emptyList();
@@ -87,8 +113,8 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
 
-            // 2. 加载已启用角色的 code
-            List<SysRole> roles = sysRoleMapper.selectList(
+            // 2. 加载已启用角色的 code 与 dataScope
+            roles = sysRoleMapper.selectList(
                     Wrappers.lambdaQuery(SysRole.class)
                             .in(SysRole::getId, roleIds)
                             .eq(SysRole::getStatus, 1));
@@ -101,14 +127,21 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
             superAdmin = roleCodes.contains(SUPER_ADMIN_ROLE_CODE);
         }
 
-        // 3. 装配 LoginUser
+        // 3. 数据范围：多角色取最宽；无角色默认 ALL（与历史硬编码行为一致）
+        DataScope dataScope = resolveWidestScope(roles);
+        Set<Long> customDeptIds = dataScope == DataScope.CUSTOM
+                ? loadCustomDeptIds(roles)
+                : Collections.emptySet();
+
+        // 4. 装配 LoginUser
         LoginUser loginUser = new LoginUser();
         loginUser.setUserId(user.getId());
         loginUser.setUsername(user.getUsername());
         loginUser.setDeptId(user.getDeptId());
         loginUser.setTenantId(user.getTenantId());
         loginUser.setRoles(roleCodes);
-        loginUser.setDataScope(DataScope.ALL);
+        loginUser.setDataScope(dataScope);
+        loginUser.setCustomDeptIds(customDeptIds);
 
         if (superAdmin) {
             loginUser.setSuperAdmin(true);
@@ -120,6 +153,63 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
         }
 
         return loginUser;
+    }
+
+    /**
+     * 多角色取最宽档。空角色集合返回 {@link DataScope#ALL}（与历史硬编码默认一致）。
+     */
+    private DataScope resolveWidestScope(List<SysRole> roles) {
+        DataScope widest = null;
+        int widestRank = -1;
+        for (SysRole role : roles) {
+            DataScope scope = toDataScope(role.getDataScope());
+            int rank = SCOPE_RANK.getOrDefault(scope, 0);
+            if (rank > widestRank) {
+                widestRank = rank;
+                widest = scope;
+            }
+        }
+        return widest != null ? widest : DataScope.ALL;
+    }
+
+    /**
+     * 将 sys_role.data_scope 的 smallint 值映射为 {@link DataScope} 枚举（按 ordinal）。
+     * null（未配置，DB 列 default 0）与越界值均按 ALL 处理，与 DB 默认值语义一致。
+     */
+    private DataScope toDataScope(Integer ordinal) {
+        if (ordinal == null) {
+            return DataScope.ALL;
+        }
+        DataScope[] values = DataScope.values();
+        if (ordinal >= 0 && ordinal < values.length) {
+            return values[ordinal];
+        }
+        return DataScope.ALL;
+    }
+
+    /**
+     * 该用户全部 CUSTOM 角色（已启用）经 sys_role_dept 关联部门的并集。
+     * 仅在有效档为 CUSTOM 时调用。
+     */
+    private Set<Long> loadCustomDeptIds(List<SysRole> roles) {
+        List<Long> customRoleIds = roles.stream()
+                .filter(role -> toDataScope(role.getDataScope()) == DataScope.CUSTOM)
+                .map(SysRole::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (customRoleIds.isEmpty()) {
+            return Collections.emptySet();
+        }
+        List<SysRoleDept> roleDepts = sysRoleDeptMapper.selectList(
+                Wrappers.lambdaQuery(SysRoleDept.class)
+                        .in(SysRoleDept::getRoleId, customRoleIds));
+        Set<Long> deptIds = new HashSet<>();
+        for (SysRoleDept roleDept : roleDepts) {
+            if (roleDept.getDeptId() != null) {
+                deptIds.add(roleDept.getDeptId());
+            }
+        }
+        return deptIds;
     }
 
     /**

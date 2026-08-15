@@ -771,11 +771,18 @@ class AgentGraphDefControllerTest {
                 com.sw.ck.agent.mapper.AgentGraphExecutionNodeMapper executionNodeMapper,
                 ChatModelFactory chatModelFactory,
                 AesGcmCipher aesGcmCipher,
-                LoginContextProvider loginContextProvider) {
+                LoginContextProvider loginContextProvider,
+                com.sw.ck.common.datascope.DeptScopeProvider deptScopeProvider) {
             return new AgentGraphExecutionServiceImpl(objectMapper, modelConfigMapper,
                     internalToolMapper, externalToolMapper, executionMapper,
                     executionNodeMapper, chatModelFactory, aesGcmCipher,
-                    loginContextProvider);
+                    loginContextProvider, deptScopeProvider);
+        }
+
+        @Bean
+        public com.sw.ck.common.datascope.DeptScopeProvider testDeptScopeProvider() {
+            // 测试用映射实现：无子部门（本测试不覆盖 DEPT_AND_CHILD 展开）
+            return deptId -> java.util.List.of();
         }
 
         @Bean

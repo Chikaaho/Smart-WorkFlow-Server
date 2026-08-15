@@ -1,5 +1,9 @@
 package com.sw.ck.storage.service.impl;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.sw.ck.common.datascope.DataScopeFilter;
+import com.sw.ck.common.datascope.DeptScopeProvider;
+import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.common.service.BaseServiceImpl;
 import com.sw.ck.storage.entity.StorageFile;
 import com.sw.ck.storage.mapper.StorageFileMapper;
@@ -14,10 +18,27 @@ public class StorageFileServiceImpl
         extends BaseServiceImpl<StorageFileMapper, StorageFile>
         implements StorageFileService {
 
+    private final LoginContextProvider loginContextProvider;
+    private final DeptScopeProvider deptScopeProvider;
+
+    public StorageFileServiceImpl(LoginContextProvider loginContextProvider,
+                                  DeptScopeProvider deptScopeProvider) {
+        this.loginContextProvider = loginContextProvider;
+        this.deptScopeProvider = deptScopeProvider;
+    }
+
     @Override
     public StorageFile findByStorageKey(String storageKey) {
         return lambdaQuery()
                 .eq(StorageFile::getStorageKey, storageKey)
                 .one();
+    }
+
+    @Override
+    public Page<StorageFile> pageFiles(long pageNum, long pageSize) {
+        // 数据范围：sw_storage_file 无 dept_id 列，等效条件在 selectStorageFilePage 内实现
+        DataScopeFilter scope = DataScopeFilter.resolve(loginContextProvider, deptScopeProvider);
+        return (Page<StorageFile>) baseMapper.selectStorageFilePage(
+                new Page<>(pageNum, pageSize), scope);
     }
 }

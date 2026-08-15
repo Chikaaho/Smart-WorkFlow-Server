@@ -189,8 +189,10 @@ class BpmInstanceServiceImplTest {
     static class TestConfig {
 
         @Bean
-        public BpmInstanceServiceImpl bpmInstanceServiceImpl() {
-            return new BpmInstanceServiceImpl();
+        public BpmInstanceServiceImpl bpmInstanceServiceImpl(
+                com.sw.ck.common.security.LoginContextProvider loginContextProvider,
+                com.sw.ck.common.datascope.DeptScopeProvider deptScopeProvider) {
+            return new BpmInstanceServiceImpl(loginContextProvider, deptScopeProvider);
         }
 
         @Bean

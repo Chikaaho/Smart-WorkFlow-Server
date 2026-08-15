@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInt
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.JsonNode;
+import jakarta.servlet.http.Cookie;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.common.config.mybatis.CommonMetaObjectHandler;
 import com.sw.ck.common.config.mybatis.tenant.CommonTenantLineHandler;
@@ -25,6 +26,7 @@ import com.sw.ck.security.jwt.JwtTokenProviderImpl;
 import com.sw.ck.security.spi.UserDetailsProvider;
 import com.sw.ck.system.mapper.SysMenuMapper;
 import com.sw.ck.system.mapper.SysRefreshTokenMapper;
+import com.sw.ck.system.mapper.SysRoleDeptMapper;
 import com.sw.ck.system.mapper.SysRoleMapper;
 import com.sw.ck.system.mapper.SysRoleMenuMapper;
 import com.sw.ck.system.mapper.SysUserRoleMapper;
@@ -226,10 +228,27 @@ class AuthFlowIntegrationTest {
                 )
                 """);
 
+        // sys_role_dept（V30：角色部门关联，CUSTOM 数据范围的部门集合）
+        jt.execute("""
+                CREATE TABLE IF NOT EXISTS sys_role_dept (
+                    id                bigint          not null primary key,
+                    role_id           bigint          not null,
+                    dept_id           bigint          not null,
+                    create_time       timestamp       not null default current_timestamp,
+                    create_by         bigint,
+                    update_time       timestamp       not null default current_timestamp,
+                    update_by         bigint,
+                    deleted           smallint        not null default 0,
+                    tenant_id         bigint          not null default 0,
+                    version           bigint          not null default 0
+                )
+                """);
+
         // Unique indexes (matching production schema)
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_user_role_tenant ON sys_user_role (tenant_id, user_id, role_id)");
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_menu_tenant ON sys_role_menu (tenant_id, role_id, menu_id)");
         jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_tenant_code ON sys_role (tenant_id, code)");
+        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_dept_tenant ON sys_role_dept (tenant_id, role_id, dept_id)");
 
         // sys_refresh_token（B1 V18 DDL，用于 B2 登录流程创建 refresh token）
         jt.execute("""
@@ -257,6 +276,7 @@ class AuthFlowIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         // 清理旧数据
+        jdbcTemplate.update("DELETE FROM sys_role_dept");
         jdbcTemplate.update("DELETE FROM sys_role_menu");
         jdbcTemplate.update("DELETE FROM sys_menu");
         jdbcTemplate.update("DELETE FROM sys_user_role");
@@ -498,6 +518,168 @@ class AuthFlowIntegrationTest {
                 .isNotZero();
     }
 
+    // ==================== 测试 5：停用/锁定用户登录被拒 ====================
+
+    @Test
+    @DisplayName("停用用户（status=1）登录 → 401 + 账号已停用，不下发 refresh cookie")
+    void login_withDisabledUser_shouldReturnFailure() throws Exception {
+        jdbcTemplate.update("""
+                INSERT INTO sys_user (id, username, password, real_name, dept_id, status, is_admin,
+                                      deleted, tenant_id, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                """, 2L, "disabled-user", ADMIN_BCRYPT_HASH, "停用用户", 1L, 1, 0);
+
+        MvcResult result = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"disabled-user\",\"password\":\"" + ADMIN_PLAIN_PASSWORD + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt())
+                .as("停用用户登录应返回 401")
+                .isEqualTo(401);
+        assertThat(body.get("msg").asText())
+                .as("提示应区分'账号已停用'")
+                .isEqualTo("账号已停用");
+        // R.fail 的 data 字段为 Java null → Jackson 输出 "data":null → JsonNode.get 返回 NullNode
+        // （非 Java null），故用 isNull()（JsonNode 语义）断言 JSON 字段为 null
+        assertThat(body.get("data").isNull())
+                .as("失败时 data 应为 null")
+                .isTrue();
+        assertThat(result.getResponse().getCookie("rt"))
+                .as("停用用户登录不应下发 refresh cookie")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("锁定用户（status=2）登录 → 401 + 账号已锁定")
+    void login_withLockedUser_shouldReturnFailure() throws Exception {
+        jdbcTemplate.update("""
+                INSERT INTO sys_user (id, username, password, real_name, dept_id, status, is_admin,
+                                      deleted, tenant_id, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                """, 3L, "locked-user", ADMIN_BCRYPT_HASH, "锁定用户", 1L, 2, 0);
+
+        MvcResult result = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"locked-user\",\"password\":\"" + ADMIN_PLAIN_PASSWORD + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt())
+                .as("锁定用户登录应返回 401")
+                .isEqualTo(401);
+        assertThat(body.get("msg").asText())
+                .as("提示应区分'账号已锁定'")
+                .isEqualTo("账号已锁定");
+    }
+
+    // ==================== 测试 6：停用用户 refresh 被拒 ====================
+
+    @Test
+    @DisplayName("账号停用后既有 refresh token 刷新 → 401 + 账号已停用 + 新轮换 token 已撤销")
+    void refresh_withDisabledUser_shouldRejectAndRevokeRotatedToken() throws Exception {
+        // ---- Act 1: 以正常状态登录，取得 refresh cookie ----
+        MvcResult loginResult = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"admin\",\"password\":\"" + ADMIN_PLAIN_PASSWORD + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String rawToken = loginResult.getResponse().getCookie("rt").getValue();
+        assertThat(rawToken)
+                .as("登录成功应下发 refresh cookie")
+                .isNotBlank();
+
+        // ---- Act 2: 将 admin 置为停用（模拟管理员停用账号） ----
+        jdbcTemplate.update("UPDATE sys_user SET status = 1 WHERE id = 1");
+
+        // ---- Act 3: 携带既有 refresh cookie 刷新 → 401 ----
+        MvcResult refreshResult = mockMvc.perform(post("/auth/refresh")
+                        .cookie(new Cookie("rt", rawToken)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(refreshResult.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt())
+                .as("停用用户 refresh 应返回 401")
+                .isEqualTo(401);
+        assertThat(body.get("msg").asText())
+                .as("提示应区分'账号已停用'")
+                .isEqualTo("账号已停用");
+
+        // ---- Act 4: 轮换出的新 token 应已撤销（DB 中该用户无存活 token） ----
+        Integer activeCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sys_refresh_token WHERE user_id = 1 AND revoked = 0", Integer.class);
+        assertThat(activeCount)
+                .as("停用后不应存在任何存活的 refresh token")
+                .isZero();
+        Integer totalCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sys_refresh_token WHERE user_id = 1", Integer.class);
+        assertThat(totalCount)
+                .as("旧 token 已撤销 + 新 token 已签发并撤销，应共两条")
+                .isEqualTo(2);
+    }
+
+    // ==================== 测试 7：正常用户 refresh 轮换回归 ====================
+
+    @Test
+    @DisplayName("正常用户 refresh → 新 access token + 新 refresh cookie，轮换语义不变")
+    void refresh_withActiveUser_shouldRotateAndReturnNewToken() throws Exception {
+        // ---- Act 1: 登录 ----
+        MvcResult loginResult = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"admin\",\"password\":\"" + ADMIN_PLAIN_PASSWORD + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String oldRawToken = loginResult.getResponse().getCookie("rt").getValue();
+        assertThat(oldRawToken)
+                .as("登录成功应下发 refresh cookie")
+                .isNotBlank();
+
+        // ---- Act 2: 刷新 → 成功 + 新 cookie ----
+        MvcResult refreshResult = mockMvc.perform(post("/auth/refresh")
+                        .cookie(new Cookie("rt", oldRawToken)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(refreshResult.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt())
+                .as("正常用户 refresh 应成功")
+                .isZero();
+        assertThat(body.get("data").get("accessToken").asText())
+                .as("应返回新 access token")
+                .isNotBlank();
+
+        String newRawToken = refreshResult.getResponse().getCookie("rt").getValue();
+        assertThat(newRawToken)
+                .as("应下发新 refresh cookie")
+                .isNotBlank()
+                .isNotEqualTo(oldRawToken);
+
+        // ---- Act 3: DB 轮换语义不变：1 条存活（新）+ 1 条已撤销（旧） ----
+        Integer activeCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sys_refresh_token WHERE user_id = 1 AND revoked = 0", Integer.class);
+        assertThat(activeCount)
+                .as("轮换后应恰有 1 条存活 token")
+                .isEqualTo(1);
+        Integer revokedCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sys_refresh_token WHERE user_id = 1 AND revoked = 1", Integer.class);
+        assertThat(revokedCount)
+                .as("轮换后旧 token 应已撤销")
+                .isEqualTo(1);
+
+        // ---- Act 4: 新 token 可再次刷新（双 token 架构回归） ----
+        MvcResult refreshAgain = mockMvc.perform(post("/auth/refresh")
+                        .cookie(new Cookie("rt", newRawToken)))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(objectMapper.readTree(refreshAgain.getResponse().getContentAsString()).get("code").asInt())
+                .as("新 token 应可再次轮换")
+                .isZero();
+    }
+
     // ==================== 测试配置 ====================
 
     @Configuration
@@ -701,9 +883,10 @@ class AuthFlowIntegrationTest {
                 SysUserRoleMapper sysUserRoleMapper,
                 SysRoleMapper sysRoleMapper,
                 SysRoleMenuMapper sysRoleMenuMapper,
-                SysMenuMapper sysMenuMapper) {
+                SysMenuMapper sysMenuMapper,
+                SysRoleDeptMapper sysRoleDeptMapper) {
             return new UserDetailsProviderImpl(sysUserService, sysUserRoleMapper, sysRoleMapper,
-                    sysRoleMenuMapper, sysMenuMapper);
+                    sysRoleMenuMapper, sysMenuMapper, sysRoleDeptMapper);
         }
 
         // ==================== RefreshTokenService ====================

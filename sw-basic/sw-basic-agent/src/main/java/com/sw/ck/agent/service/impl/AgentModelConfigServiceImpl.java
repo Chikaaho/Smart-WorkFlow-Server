@@ -1,7 +1,6 @@
 package com.sw.ck.agent.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sw.ck.agent.dto.AgentModelConfigDTO;
 import com.sw.ck.agent.dto.AgentModelSaveReqDTO;
@@ -10,10 +9,13 @@ import com.sw.ck.agent.entity.AgentModelConfig;
 import com.sw.ck.agent.mapper.AgentModelConfigMapper;
 import com.sw.ck.agent.service.AgentModelConfigService;
 import com.sw.ck.common.crypto.AesGcmCipher;
+import com.sw.ck.common.datascope.DataScopeFilter;
+import com.sw.ck.common.datascope.DeptScopeProvider;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
+import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.common.service.BaseServiceImpl;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -52,21 +54,29 @@ public class AgentModelConfigServiceImpl
     private static final Duration TEST_READ_TIMEOUT = Duration.ofSeconds(5);
 
     private final AesGcmCipher cipher;
+    private final LoginContextProvider loginContextProvider;
+    private final DeptScopeProvider deptScopeProvider;
 
-    public AgentModelConfigServiceImpl(AesGcmCipher cipher) {
+    public AgentModelConfigServiceImpl(AesGcmCipher cipher,
+                                       LoginContextProvider loginContextProvider,
+                                       DeptScopeProvider deptScopeProvider) {
         this.cipher = cipher;
+        this.loginContextProvider = loginContextProvider;
+        this.deptScopeProvider = deptScopeProvider;
     }
 
     // ==================== 查询 ====================
 
     @Override
     public PageResult<AgentModelConfigDTO> pageModels(PageParam pageParam, String nameKeyword) {
-        LambdaQueryWrapper<AgentModelConfig> wrapper = Wrappers.lambdaQuery();
-        if (nameKeyword != null && !nameKeyword.isBlank()) {
-            wrapper.like(AgentModelConfig::getName, nameKeyword);
-        }
-        wrapper.orderByDesc(AgentModelConfig::getId);
-        Page<AgentModelConfig> page = page(new Page<>(pageParam.getPageNum(), pageParam.getPageSize()), wrapper);
+        // 空串/空白归一化为 null，保持与原 wrapper 判空的等价语义
+        String keyword = nameKeyword != null && !nameKeyword.isBlank() ? nameKeyword : null;
+
+        // 数据范围：sw_agent_model_config 无 dept_id 列，等效条件在 selectModelConfigPage 内实现
+        DataScopeFilter scope = DataScopeFilter.resolve(loginContextProvider, deptScopeProvider);
+
+        IPage<AgentModelConfig> page = baseMapper.selectModelConfigPage(
+                new Page<>(pageParam.getPageNum(), pageParam.getPageSize()), keyword, scope);
         return PageResult.of(page.convert(this::toDTO));
     }
 

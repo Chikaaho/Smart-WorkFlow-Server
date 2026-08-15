@@ -2,6 +2,7 @@ package com.sw.ck.system.config;
 
 import com.sw.ck.security.spi.UserDetailsProvider;
 import com.sw.ck.system.mapper.SysMenuMapper;
+import com.sw.ck.system.mapper.SysRoleDeptMapper;
 import com.sw.ck.system.mapper.SysRoleMapper;
 import com.sw.ck.system.mapper.SysRoleMenuMapper;
 import com.sw.ck.system.mapper.SysUserRoleMapper;
@@ -35,9 +36,10 @@ public class SystemAutoConfiguration {
                                                    SysUserRoleMapper sysUserRoleMapper,
                                                    SysRoleMapper sysRoleMapper,
                                                    SysRoleMenuMapper sysRoleMenuMapper,
-                                                   SysMenuMapper sysMenuMapper) {
+                                                   SysMenuMapper sysMenuMapper,
+                                                   SysRoleDeptMapper sysRoleDeptMapper) {
         return new UserDetailsProviderImpl(sysUserService, sysUserRoleMapper, sysRoleMapper,
-                sysRoleMenuMapper, sysMenuMapper);
+                sysRoleMenuMapper, sysMenuMapper, sysRoleDeptMapper);
     }
 
     /**

@@ -557,8 +557,16 @@ class AgentModelConfigServiceImplTest {
         }
 
         @Bean
-        public AgentModelConfigService agentModelConfigService(AesGcmCipher aesGcmCipher) {
-            return new AgentModelConfigServiceImpl(aesGcmCipher);
+        public AgentModelConfigService agentModelConfigService(AesGcmCipher aesGcmCipher,
+                                                               LoginContextProvider loginContextProvider,
+                                                               com.sw.ck.common.datascope.DeptScopeProvider deptScopeProvider) {
+            return new AgentModelConfigServiceImpl(aesGcmCipher, loginContextProvider, deptScopeProvider);
+        }
+
+        @Bean
+        public com.sw.ck.common.datascope.DeptScopeProvider testDeptScopeProvider() {
+            // 测试用映射实现：无子部门（本测试不覆盖 DEPT_AND_CHILD 展开）
+            return deptId -> java.util.List.of();
         }
     }
 }

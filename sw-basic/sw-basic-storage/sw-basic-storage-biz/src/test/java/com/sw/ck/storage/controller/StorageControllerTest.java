@@ -1,9 +1,5 @@
 package com.sw.ck.storage.controller;
 
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
-import com.baomidou.mybatisplus.extension.conditions.query.LambdaQueryChainWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
@@ -44,16 +40,13 @@ class StorageControllerTest {
 
     private final StorageFacade storageFacade = mock(StorageFacade.class);
     private final StorageFileService storageFileService = mock(StorageFileService.class);
-    private final LambdaQueryChainWrapper<StorageFile> lambdaQueryChain = mock(LambdaQueryChainWrapper.class);
 
     private final StorageController controller = new StorageController(storageFacade, storageFileService);
 
     // ==================== 测试数据工厂 ====================
 
     private void mockListMocks() {
-        when(storageFileService.lambdaQuery()).thenReturn(lambdaQueryChain);
-        when(lambdaQueryChain.orderByDesc(any(SFunction.class))).thenReturn(lambdaQueryChain);
-        when(lambdaQueryChain.getWrapper()).thenReturn(mock(LambdaQueryWrapper.class));
+        // 列表入口已改为 StorageFileService.pageFiles（数据范围纳管），不再经 lambdaQuery
     }
 
     private StorageFile createFile(String storageKey) {
@@ -134,8 +127,7 @@ class StorageControllerTest {
         expectedPage.setRecords(List.of(f1, f2));
         expectedPage.setTotal(2L);
 
-        when(storageFileService.page(any(Page.class), any(Wrapper.class)))
-                .thenReturn(expectedPage);
+        when(storageFileService.pageFiles(1L, 20L)).thenReturn(expectedPage);
 
         R<Page<StorageFile>> result = controller.list(1L, 20L);
 
@@ -143,7 +135,7 @@ class StorageControllerTest {
         assertThat(result.getData()).isNotNull();
         assertThat(result.getData().getRecords()).hasSize(2);
         assertThat(result.getData().getTotal()).isEqualTo(2L);
-        verify(storageFileService).page(any(Page.class), any(Wrapper.class));
+        verify(storageFileService).pageFiles(1L, 20L);
     }
 
     @Test
@@ -154,8 +146,7 @@ class StorageControllerTest {
         emptyPage.setRecords(List.of());
         emptyPage.setTotal(0L);
 
-        when(storageFileService.page(any(Page.class), any(Wrapper.class)))
-                .thenReturn(emptyPage);
+        when(storageFileService.pageFiles(1L, 20L)).thenReturn(emptyPage);
 
         R<Page<StorageFile>> result = controller.list(1L, 20L);
 
@@ -172,13 +163,11 @@ class StorageControllerTest {
         emptyPage.setRecords(List.of());
         emptyPage.setTotal(0L);
 
-        when(storageFileService.page(any(Page.class), any(Wrapper.class)))
-                .thenReturn(emptyPage);
+        when(storageFileService.pageFiles(1L, 20L)).thenReturn(emptyPage);
 
         controller.list(1L, 20L);
 
-        verify(storageFileService).page(argThat(p ->
-                p.getCurrent() == 1 && p.getSize() == 20), any());
+        verify(storageFileService).pageFiles(1L, 20L);
     }
 
     // ==================== GET /storage/files/{storageKey} ====================

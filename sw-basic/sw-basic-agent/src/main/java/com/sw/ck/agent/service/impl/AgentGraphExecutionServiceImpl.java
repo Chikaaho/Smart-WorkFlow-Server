@@ -1,6 +1,6 @@
 package com.sw.ck.agent.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +27,8 @@ import com.sw.ck.agent.orchestration.AgentToolCallbackFactory;
 import com.sw.ck.agent.orchestration.ChatModelFactory;
 import com.sw.ck.agent.service.AgentGraphExecutionService;
 import com.sw.ck.common.crypto.AesGcmCipher;
+import com.sw.ck.common.datascope.DataScopeFilter;
+import com.sw.ck.common.datascope.DeptScopeProvider;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
 import com.sw.ck.common.page.PageParam;
@@ -101,6 +103,7 @@ public class AgentGraphExecutionServiceImpl
     private final ChatModelFactory chatModelFactory;
     private final AesGcmCipher cipher;
     private final LoginContextProvider loginContextProvider;
+    private final DeptScopeProvider deptScopeProvider;
 
     /**
      * 工具回调工厂（可选注入，与 F01 同款模式）：{@code sw.agent.enabled} 未开启时
@@ -117,7 +120,8 @@ public class AgentGraphExecutionServiceImpl
                                           AgentGraphExecutionNodeMapper executionNodeMapper,
                                           ChatModelFactory chatModelFactory,
                                           AesGcmCipher cipher,
-                                          LoginContextProvider loginContextProvider) {
+                                          LoginContextProvider loginContextProvider,
+                                          DeptScopeProvider deptScopeProvider) {
         this.objectMapper = objectMapper;
         this.modelConfigMapper = modelConfigMapper;
         this.internalToolMapper = internalToolMapper;
@@ -127,6 +131,7 @@ public class AgentGraphExecutionServiceImpl
         this.chatModelFactory = chatModelFactory;
         this.cipher = cipher;
         this.loginContextProvider = loginContextProvider;
+        this.deptScopeProvider = deptScopeProvider;
     }
 
     @Override
@@ -220,12 +225,11 @@ public class AgentGraphExecutionServiceImpl
 
     @Override
     public PageResult<AgentGraphExecutionDTO> pageExecutions(PageParam pageParam, Long graphDefId) {
-        // 租户隔离经租户拦截器自动生效；不做用户级过滤（设计器/运维视角的租户内全部执行）
-        LambdaQueryWrapper<AgentGraphExecution> wrapper = Wrappers.<AgentGraphExecution>lambdaQuery()
-                .eq(graphDefId != null, AgentGraphExecution::getGraphDefId, graphDefId)
-                .orderByDesc(AgentGraphExecution::getCreateTime);
-        Page<AgentGraphExecution> page = executionMapper.selectPage(
-                new Page<>(pageParam.getPageNum(), pageParam.getPageSize()), wrapper);
+        // 租户隔离经租户拦截器自动生效；数据范围：sw_agent_graph_execution 无 dept_id 列，
+        // 等效条件在 selectExecutionPage 内实现（create_by VARCHAR 兼容比较）
+        DataScopeFilter scope = DataScopeFilter.resolve(loginContextProvider, deptScopeProvider);
+        IPage<AgentGraphExecution> page = executionMapper.selectExecutionPage(
+                new Page<>(pageParam.getPageNum(), pageParam.getPageSize()), graphDefId, scope);
         return PageResult.of(page.convert(this::toSummaryDTO));
     }
 

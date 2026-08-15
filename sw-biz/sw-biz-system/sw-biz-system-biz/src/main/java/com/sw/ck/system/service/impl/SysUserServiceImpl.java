@@ -1,5 +1,6 @@
 package com.sw.ck.system.service.impl;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.service.BaseServiceImpl;
@@ -58,7 +59,9 @@ public class SysUserServiceImpl
 
     @Override
     public PageResult<SysUser> page(PageParam pageParam) {
-        return baseMapper.selectPage(pageParam, null);
+        // 数据范围条件由 @DataScope 标注的 selectUserPage 经 DataScopeHandler 自动拼接
+        return PageResult.of(baseMapper.selectUserPage(
+                new Page<>(pageParam.getPageNum(), pageParam.getPageSize())));
     }
 
     @Override
