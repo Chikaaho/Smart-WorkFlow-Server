@@ -180,6 +180,34 @@ class GraphToBpmnTranslatorTest {
                 .isEqualTo(model2.getProcesses().get(0).getFlowElements().size());
     }
 
+    @Test
+    void shouldSkipUnknownNodeType() {
+        // 注册表分发（B2）：未注册翻译器的类型按既有语义 warn + skip，
+        // 其余节点照常翻译，翻译不失败。
+        ProcessGraph graph = ProcessGraph.builder()
+                .processKey("unknown_type")
+                .elements(List.of(
+                        node("start", "START"),
+                        node("cond", "CONDITION"),
+                        node("approval", "APPROVAL", approverConfig("DESIGNATED", List.of("u1"))),
+                        node("end", "END"),
+                        edge("e1", "start", "cond"),
+                        edge("e2", "cond", "approval"),
+                        edge("e3", "approval", "end")
+                ))
+                .build();
+
+        BpmnModel model = translator.translate(graph);
+
+        // CONDITION（已注册于校验器但无翻译器）被跳过；START/APPROVAL/END 照常产出
+        assertThat(model.getProcesses()).hasSize(1);
+        org.flowable.bpmn.model.Process process = model.getProcesses().get(0);
+        assertThat(process.getFlowElement("cond")).isNull();
+        assertThat(process.getFlowElement("start")).isNotNull();
+        assertThat(process.getFlowElement("approval")).isInstanceOf(UserTask.class);
+        assertThat(process.getFlowElement("end")).isNotNull();
+    }
+
     // ==================== helpers ====================
 
     private static GraphElement node(String id, String type) {
