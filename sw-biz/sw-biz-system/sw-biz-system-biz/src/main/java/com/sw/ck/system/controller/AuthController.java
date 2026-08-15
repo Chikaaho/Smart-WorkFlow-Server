@@ -89,10 +89,17 @@ public class AuthController {
             return R.fail(401, "用户名或密码错误");
         }
 
-        // 3. 签发 access token
+        // 3. 校验账号状态（0=正常 1=停用 2=锁定；null/未知值按停用处理，拒绝签发 token）
+        String statusDenyMessage = statusDenyMessage(user.getStatus());
+        if (statusDenyMessage != null) {
+            log.warn("用户 {} 登录被拒绝: {}", request.getUsername(), statusDenyMessage);
+            return R.fail(401, statusDenyMessage);
+        }
+
+        // 4. 签发 access token
         String accessToken = jwtTokenProvider.generateToken(user.getId());
 
-        // 4. 生成 refresh token → 写 DB + 设 httpOnly cookie
+        // 5. 生成 refresh token → 写 DB + 设 httpOnly cookie
         String refreshToken = refreshTokenService.createRefreshToken(
                 user.getId(), user.getTenantId(), jwtProperties.getRefreshExpireSeconds());
         CookieUtils.setRefreshCookie(response, refreshToken,
@@ -119,12 +126,22 @@ public class AuthController {
         try {
             RefreshTokenService.RefreshTokenRotation rotation =
                     refreshTokenService.rotateRefreshToken(rawToken, jwtProperties.getRefreshExpireSeconds());
-            // 3. 下发新 refresh cookie
+            // 3. 重载用户并校验账号状态（停用/锁定/已删除账号不得续期：
+            //    撤销刚轮换出的新 refresh token + 清除 cookie）
+            SysUser user = sysUserService.getById(rotation.userId());
+            String statusDenyMessage = user == null ? "账号已停用" : statusDenyMessage(user.getStatus());
+            if (statusDenyMessage != null) {
+                refreshTokenService.revokeRefreshToken(rotation.newRawToken());
+                CookieUtils.clearRefreshCookie(response);
+                log.warn("用户 {} refresh 被拒绝: {}", rotation.userId(), statusDenyMessage);
+                return R.fail(401, statusDenyMessage);
+            }
+            // 4. 下发新 refresh cookie
             CookieUtils.setRefreshCookie(response, rotation.newRawToken(),
                     (int) jwtProperties.getRefreshExpireSeconds(), cookieSecure);
-            // 4. 签发新 access token
+            // 5. 签发新 access token
             String newAccessToken = jwtTokenProvider.generateToken(rotation.userId());
-            // 5. 返回
+            // 6. 返回
             return R.ok(new TokenResponse(newAccessToken, jwtProperties.getAccessExpireSeconds()));
         } catch (BaseException e) {
             // 轮换失败（无效/过期/重放）→ 清 cookie
@@ -157,6 +174,23 @@ public class AuthController {
             // 用户可能未认证（access token 已过期），忽略
         }
         return R.ok();
+    }
+
+    /**
+     * 账号状态校验提示。
+     * <p>
+     * status=0（正常）→ 返回 null（放行）；status=2（锁定）→ "账号已锁定"；
+     * 其余（1=停用，以及 null/未知值）→ "账号已停用"。登录与刷新两条链路共用，
+     * 保证提示语义一致。
+     *
+     * @param status 用户状态
+     * @return 拒绝提示语；正常状态返回 null
+     */
+    private String statusDenyMessage(Integer status) {
+        if (status == null || status != 0) {
+            return status != null && status == 2 ? "账号已锁定" : "账号已停用";
+        }
+        return null;
     }
 
     @Data

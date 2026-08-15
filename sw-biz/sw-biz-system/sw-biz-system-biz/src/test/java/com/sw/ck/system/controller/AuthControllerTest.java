@@ -9,16 +9,21 @@ import com.sw.ck.system.entity.SysUser;
 import com.sw.ck.system.model.TokenResponse;
 import com.sw.ck.system.service.RefreshTokenService;
 import com.sw.ck.system.service.SysUserService;
+import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -66,6 +71,7 @@ class AuthControllerTest {
         user.setTenantId(0L);
         user.setUsername("admin");
         user.setPassword(passwordEncoder.encode("admin123"));
+        user.setStatus(0);
         when(sysUserService.getByUsername("admin")).thenReturn(user);
         when(jwtTokenProvider.generateToken(1L)).thenReturn("test-jwt-token");
 
@@ -142,5 +148,194 @@ class AuthControllerTest {
         assertThat(result.getMsg())
                 .as("失败消息应包含提示")
                 .isNotNull();
+    }
+
+    @Test
+    @DisplayName("停用用户（status=1）登录 → 401 + 账号已停用，不签发任何 token")
+    void login_withDisabledUser_shouldReturnFailure() {
+        // -- Arrange --
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setTenantId(0L);
+        user.setUsername("disabled");
+        user.setPassword(passwordEncoder.encode("correct-password"));
+        user.setStatus(1);
+        when(sysUserService.getByUsername("disabled")).thenReturn(user);
+
+        // -- Act --
+        AuthController.LoginRequest request = new AuthController.LoginRequest();
+        request.setUsername("disabled");
+        request.setPassword("correct-password");
+        R<TokenResponse> result = controller.login(request, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("停用用户应返回 401")
+                .isEqualTo(401);
+        assertThat(result.getMsg())
+                .as("提示应区分'账号已停用'")
+                .isEqualTo("账号已停用");
+        assertThat(result.getData())
+                .as("失败时 data 应为 null")
+                .isNull();
+        assertThat(mockResponse.getCookie("rt"))
+                .as("拒绝登录时不应下发 refresh cookie")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("锁定用户（status=2）登录 → 401 + 账号已锁定")
+    void login_withLockedUser_shouldReturnFailure() {
+        // -- Arrange --
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setTenantId(0L);
+        user.setUsername("locked");
+        user.setPassword(passwordEncoder.encode("correct-password"));
+        user.setStatus(2);
+        when(sysUserService.getByUsername("locked")).thenReturn(user);
+
+        // -- Act --
+        AuthController.LoginRequest request = new AuthController.LoginRequest();
+        request.setUsername("locked");
+        request.setPassword("correct-password");
+        R<TokenResponse> result = controller.login(request, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("锁定用户应返回 401")
+                .isEqualTo(401);
+        assertThat(result.getMsg())
+                .as("提示应区分'账号已锁定'")
+                .isEqualTo("账号已锁定");
+        assertThat(result.getData())
+                .as("失败时 data 应为 null")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("停用用户 refresh → 401 + 账号已停用 + 新轮换 token 已撤销 + cookie 已清除")
+    void refresh_withDisabledUser_shouldRejectAndRevokeNewToken() {
+        // -- Arrange --
+        String newRawToken = "new-refresh-token-raw-64-chars-hex";
+        when(refreshTokenService.rotateRefreshToken(anyString(), anyLong()))
+                .thenReturn(new RefreshTokenService.RefreshTokenRotation(1L, 0L, newRawToken));
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setStatus(1);
+        when(sysUserService.getById(1L)).thenReturn(user);
+
+        MockHttpServletRequest servletRequest = new MockHttpServletRequest();
+        servletRequest.setCookies(new Cookie("rt", "old-refresh-token-raw-64-chars-hex"));
+
+        // -- Act --
+        R<TokenResponse> result = controller.refresh(servletRequest, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("停用用户 refresh 应返回 401")
+                .isEqualTo(401);
+        assertThat(result.getMsg())
+                .as("提示应区分'账号已停用'")
+                .isEqualTo("账号已停用");
+        verify(refreshTokenService).revokeRefreshToken(newRawToken);
+        assertThat(mockResponse.getCookie("rt"))
+                .as("拒绝刷新时应下发清除 cookie")
+                .isNotNull();
+        assertThat(mockResponse.getCookie("rt").getValue())
+                .as("清除 cookie 应为空值")
+                .isEmpty();
+        assertThat(mockResponse.getCookie("rt").getMaxAge())
+                .as("清除 cookie 应 Max-Age=0")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("锁定用户 refresh → 401 + 账号已锁定 + 新轮换 token 已撤销")
+    void refresh_withLockedUser_shouldRejectAndRevokeNewToken() {
+        // -- Arrange --
+        String newRawToken = "new-refresh-token-raw-64-chars-hex";
+        when(refreshTokenService.rotateRefreshToken(anyString(), anyLong()))
+                .thenReturn(new RefreshTokenService.RefreshTokenRotation(1L, 0L, newRawToken));
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setStatus(2);
+        when(sysUserService.getById(1L)).thenReturn(user);
+
+        MockHttpServletRequest servletRequest = new MockHttpServletRequest();
+        servletRequest.setCookies(new Cookie("rt", "old-refresh-token-raw-64-chars-hex"));
+
+        // -- Act --
+        R<TokenResponse> result = controller.refresh(servletRequest, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("锁定用户 refresh 应返回 401")
+                .isEqualTo(401);
+        assertThat(result.getMsg())
+                .as("提示应区分'账号已锁定'")
+                .isEqualTo("账号已锁定");
+        verify(refreshTokenService).revokeRefreshToken(newRawToken);
+    }
+
+    @Test
+    @DisplayName("refresh 用户已不存在（逻辑删除）→ 401 + 账号已停用 + 新轮换 token 已撤销")
+    void refresh_withDeletedUser_shouldRejectAndRevokeNewToken() {
+        // -- Arrange --
+        String newRawToken = "new-refresh-token-raw-64-chars-hex";
+        when(refreshTokenService.rotateRefreshToken(anyString(), anyLong()))
+                .thenReturn(new RefreshTokenService.RefreshTokenRotation(1L, 0L, newRawToken));
+        when(sysUserService.getById(1L)).thenReturn(null);
+
+        MockHttpServletRequest servletRequest = new MockHttpServletRequest();
+        servletRequest.setCookies(new Cookie("rt", "old-refresh-token-raw-64-chars-hex"));
+
+        // -- Act --
+        R<TokenResponse> result = controller.refresh(servletRequest, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("用户不存在时 refresh 应返回 401")
+                .isEqualTo(401);
+        assertThat(result.getMsg())
+                .as("用户不存在按'账号已停用'提示")
+                .isEqualTo("账号已停用");
+        verify(refreshTokenService).revokeRefreshToken(newRawToken);
+    }
+
+    @Test
+    @DisplayName("正常用户 refresh → 新 access token + 新 refresh cookie，不撤销新 token")
+    void refresh_withActiveUser_shouldReturnNewTokens() {
+        // -- Arrange --
+        String newRawToken = "new-refresh-token-raw-64-chars-hex";
+        when(refreshTokenService.rotateRefreshToken(anyString(), anyLong()))
+                .thenReturn(new RefreshTokenService.RefreshTokenRotation(1L, 0L, newRawToken));
+        SysUser user = new SysUser();
+        user.setId(1L);
+        user.setStatus(0);
+        when(sysUserService.getById(1L)).thenReturn(user);
+        when(jwtTokenProvider.generateToken(1L)).thenReturn("test-jwt-token-refreshed");
+
+        MockHttpServletRequest servletRequest = new MockHttpServletRequest();
+        servletRequest.setCookies(new Cookie("rt", "old-refresh-token-raw-64-chars-hex"));
+
+        // -- Act --
+        R<TokenResponse> result = controller.refresh(servletRequest, mockResponse);
+
+        // -- Assert --
+        assertThat(result.getCode())
+                .as("正常用户 refresh 应成功")
+                .isZero();
+        assertThat(result.getData().getAccessToken())
+                .as("应返回新 access token")
+                .isEqualTo("test-jwt-token-refreshed");
+        assertThat(result.getData().getExpiresIn())
+                .as("expiresIn 应按 JWT 配置返回")
+                .isEqualTo(900);
+        assertThat(mockResponse.getCookie("rt").getValue())
+                .as("应下发新的 refresh cookie")
+                .isEqualTo(newRawToken);
+        verify(refreshTokenService, never())
+                .revokeRefreshToken(anyString());
     }
 }
