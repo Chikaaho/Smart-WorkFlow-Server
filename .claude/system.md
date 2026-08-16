@@ -417,3 +417,14 @@ sw-dependencies (BOM)
 - 关系原语两档（TABLE + REFERENCE）各跑一条最小路径，验 CASCADE 与 RESTRICT 两种删除语义。
 
 ---
+
+## 13. 信息分层铁律（与根 system.md §0.4 一致）
+
+- **`knowledge/` = 唯一完整权威信息源**：功能进度/状态/已知问题/架构/决策全部以 knowledge 为准，任何状态变更必须首先落 knowledge
+- **`memory/` = 最少信息摘要**：只作规划角色快速入口，不承载 knowledge 中没有的完整信息；memory 与 knowledge 冲突时以 knowledge 为准并立即修正 memory，不允许反向
+- **触碰状态文件必须同步 knowledge 全量文件**：执行角色触碰任何状态文件（如 `功能清单.md`）时，必须同步更新对应 knowledge 文件**全量（全节/全文）**——禁止"只更新文件首部/只更新 memory"造成 knowledge 中下部残留
+- **清单 🟦/⬜ 缺口同步进 `todo/requirement-pool.md`**：功能清单状态列对齐时，🟦/⬜ 行的缺口同时登记 P 编号，防"清单独有"
+
+> 本条款为根 system.md §0.4「信息分层铁律（D85，2026-08-16）」在后端工程宪法的同步条目，语义与根表述一致，冲突时以根 system.md 为准。
+
+---
