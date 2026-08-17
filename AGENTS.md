@@ -32,7 +32,7 @@ run frontend commands.  Do not create or alter product direction: execute an
 already-issued direction and report any infeasibility through the prescribed
 receipt path.
 
-For Maven compilation or tests, use `MAVEN_OPTS="-Xmx512m"`.  Before any
+For Maven compilation or tests, use `MAVEN_OPTS="-Xmx2g"`.  Before any
 compile/test/build operation, check that no frontend compile/test/build process
 is running; wait rather than run the two stacks concurrently.  Use the
 constitution's module boundaries, schema/security constraints, verification
