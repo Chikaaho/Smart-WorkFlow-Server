@@ -13,7 +13,10 @@
 --   全归 Flyway 管理（非动态宽表）
 -- H2 注意：
 --   无 COMMENT ON 支持
---   条件唯一索引用 WHERE 子句（H2 支持）
+--   H2 不支持 PostgreSQL 的 partial unique index（WHERE 条件索引），
+--   故采用生成列 active_key + 唯一索引等价实现「仅 active=true 唯一」语义：
+--   active=true 时 active_key = 'tenant_id:form_key'（非空 → 唯一约束生效），
+--   active=false 时 active_key = NULL（H2 唯一索引允许多个 NULL 共存）。
 -- ===================================================================
 
 -- ==================== 1. 表单↔流程绑定表 ====================
@@ -28,10 +31,12 @@ create table sw_bpm_form_binding (
     version           bigint          not null default 0,
     form_key          varchar(200)    not null,
     process_def_key   varchar(200)    not null,
-    active            boolean         not null default true
+    active            boolean         not null default true,
+    active_key        varchar(265)    generated always as (case when active then (cast(tenant_id as varchar(64)) || ':' || form_key) end)
 );
 
-create unique index uk_sw_bpm_binding_active on sw_bpm_form_binding (tenant_id, form_key) where active = true;
+-- 生成列唯一索引：等价于 PG 的 partial unique index（tenant_id, form_key) 条件仅限 active=true
+create unique index uk_sw_bpm_binding_active on sw_bpm_form_binding (active_key);
 
 -- ==================== 2. 流程实例记录表 ====================
 create table sw_bpm_instance (
