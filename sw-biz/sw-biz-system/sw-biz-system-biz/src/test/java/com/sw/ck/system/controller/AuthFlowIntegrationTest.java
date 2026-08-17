@@ -152,7 +152,8 @@ class AuthFlowIntegrationTest {
                 )
                 """);
 
-        // sys_role（列名匹配 SysRole 实体的 @TableField 映射，非 V5 迁移后的新列名）
+        // sys_role（按 V5 迁移链尾契约建表：built_in boolean / remark varchar(255)，
+        // 列名与 SysRole 实体的 @TableField 映射一致）
         jt.execute("""
                 CREATE TABLE IF NOT EXISTS sys_role (
                     id                bigint          not null primary key,
@@ -161,8 +162,8 @@ class AuthFlowIntegrationTest {
                     sort              integer         not null default 0,
                     status            smallint        not null default 0,
                     data_scope        smallint,
-                    is_builtin        smallint        not null default 0,
-                    description       clob,
+                    built_in          boolean         not null default false,
+                    remark            varchar(255),
                     create_time       timestamp       not null default current_timestamp,
                     create_by         bigint,
                     update_time       timestamp       not null default current_timestamp,
@@ -244,11 +245,11 @@ class AuthFlowIntegrationTest {
                 )
                 """);
 
-        // Unique indexes (matching production schema)
-        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_user_role_tenant ON sys_user_role (tenant_id, user_id, role_id)");
-        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_menu_tenant ON sys_role_menu (tenant_id, role_id, menu_id)");
-        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_tenant_code ON sys_role (tenant_id, code)");
-        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_dept_tenant ON sys_role_dept (tenant_id, role_id, dept_id)");
+        // Unique indexes (matching production chain-end: V5 索引 + V13 加 deleted 列；sys_role_dept 按 V30)
+        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_user_role_tenant ON sys_user_role (tenant_id, user_id, role_id, deleted)");
+        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_menu_tenant ON sys_role_menu (tenant_id, role_id, menu_id, deleted)");
+        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_tenant_code ON sys_role (tenant_id, code, deleted)");
+        jt.execute("CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_role_dept ON sys_role_dept (role_id, dept_id)");
 
         // sys_refresh_token（B1 V18 DDL，用于 B2 登录流程创建 refresh token）
         jt.execute("""
@@ -293,9 +294,9 @@ class AuthFlowIntegrationTest {
 
         // ---- Seed: superadmin 角色 ----
         jdbcTemplate.update("""
-                INSERT INTO sys_role (id, name, code, sort, status, is_builtin, deleted, tenant_id, version)
+                INSERT INTO sys_role (id, name, code, sort, status, built_in, deleted, tenant_id, version)
                 VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0)
-                """, 1L, "超级管理员", "superadmin", 0, 1, 1);
+                """, 1L, "超级管理员", "superadmin", 0, 1, true);
 
         // ---- Seed: 用户-角色关联 ----
         jdbcTemplate.update("""

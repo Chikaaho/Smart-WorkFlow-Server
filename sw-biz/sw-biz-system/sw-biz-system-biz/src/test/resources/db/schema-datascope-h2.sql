@@ -1,7 +1,10 @@
 -- ===================================================================
 -- Smart-WorkFlow :: 数据范围相关测试 Schema（H2）
 -- 覆盖 sys_dept / sys_role / sys_user / sys_user_role / sys_role_menu /
--- sys_menu / sys_role_dept，与生产 V1 / V30 迁移定义一致。
+-- sys_menu / sys_role_dept；角色相关表（sys_role/sys_user_role/sys_role_menu/
+-- sys_role_dept）与生产 V1→V30 迁移链尾一致：sys_role 为 V5 后契约
+-- （built_in boolean / remark varchar(255)、唯一索引 uk_sys_role_tenant_code
+-- 及其 V13 加 deleted 列形态）。
 -- ===================================================================
 
 create table sys_dept (
@@ -37,12 +40,12 @@ create table sys_role (
     sort            integer         not null default 0,
     status          smallint        not null default 0,
     -- 测试用可空列：验证 UserDetailsProviderImpl 对 dataScope=null（历史脏数据/旧库）的兜底；
-    -- 生产 DDL（V1）为 not null default 0
+    -- 生产链尾（V5 起 data_scope 已改为可空、无默认值）与本定义一致
     data_scope      smallint,
-    description     clob,
-    is_builtin      smallint        not null default 0
+    remark          varchar(255),
+    built_in        boolean         not null default false
 );
-create unique index uk_sys_role_code on sys_role (code);
+create unique index uk_sys_role_tenant_code on sys_role (tenant_id, code, deleted);
 
 create table sys_user (
     id              bigint          not null primary key,
@@ -82,7 +85,7 @@ create table sys_user_role (
     user_id         bigint          not null,
     role_id         bigint          not null
 );
-create unique index uk_sys_user_role on sys_user_role (user_id, role_id);
+create unique index uk_sys_user_role_tenant on sys_user_role (tenant_id, user_id, role_id, deleted);
 
 create table sys_role_menu (
     id              bigint          not null primary key,
@@ -96,7 +99,7 @@ create table sys_role_menu (
     role_id         bigint          not null,
     menu_id         bigint          not null
 );
-create unique index uk_sys_role_menu on sys_role_menu (role_id, menu_id);
+create unique index uk_sys_role_menu_tenant on sys_role_menu (tenant_id, role_id, menu_id, deleted);
 
 -- 全局表（无 tenant_id 列，同 V1 定义）
 create table sys_menu (

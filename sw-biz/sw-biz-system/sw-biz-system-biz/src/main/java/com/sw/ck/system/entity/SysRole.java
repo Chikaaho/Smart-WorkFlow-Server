@@ -44,10 +44,10 @@ public class SysRole extends BaseEntity {
     private List<Long> deptIds;
 
     /** 内置标记 */
-    @TableField("is_builtin")
+    @TableField("built_in")
     private Boolean builtIn;
 
     /** 备注/描述 */
-    @TableField("description")
+    @TableField("remark")
     private String description;
 }
