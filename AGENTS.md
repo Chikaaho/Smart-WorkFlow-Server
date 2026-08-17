@@ -40,3 +40,12 @@ gate, and structured receipts without exception.
 
 Claude-only settings under `.claude/settings*.json` do not replace Codex's
 approval and sandbox policies.
+
+## Git commit language
+
+Codex must write Git commit subjects and bodies in Chinese by default.  Keep
+necessary technical identifiers such as module names, class names, commands,
+issue IDs, and conventional prefixes (`feat:`, `fix:`, `docs:`) unchanged when
+useful, but the descriptive commit message itself must not be purely English.
+Do not rewrite published history solely to enforce this rule unless the user
+explicitly authorizes the history rewrite and required force-push.
