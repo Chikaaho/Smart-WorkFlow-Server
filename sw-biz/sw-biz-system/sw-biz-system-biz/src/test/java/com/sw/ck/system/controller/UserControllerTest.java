@@ -95,7 +95,7 @@ class UserControllerTest {
     @Test
     @DisplayName("创建用户 → 返回新 ID，plainPassword 透传 Service")
     void create_shouldReturnId() {
-        when(sysUserService.create(any(SysUser.class), eq("P@ssw0rd!"))).thenReturn(100L);
+        when(sysUserService.createWithAssociations(any(SysUser.class), eq("P@ssw0rd!"), isNull(), isNull())).thenReturn(100L);
 
         UserController.UserFormRequest req = new UserController.UserFormRequest();
         req.setUsername("newuser");
@@ -107,13 +107,13 @@ class UserControllerTest {
 
         assertThat(result.getCode()).as("成功码应为 0").isZero();
         assertThat(result.getData()).as("应返回新用户 ID").isEqualTo(100L);
-        verify(sysUserService).create(any(SysUser.class), eq("P@ssw0rd!"));
+        verify(sysUserService).createWithAssociations(any(SysUser.class), eq("P@ssw0rd!"), isNull(), isNull());
     }
 
     @Test
     @DisplayName("创建用户 plainPassword=null → Controller 透传不抛异常")
     void create_withNullPassword_shouldNotThrow() {
-        when(sysUserService.create(any(SysUser.class), eq(null))).thenReturn(101L);
+        when(sysUserService.createWithAssociations(any(SysUser.class), eq(null), isNull(), isNull())).thenReturn(101L);
 
         UserController.UserFormRequest req = new UserController.UserFormRequest();
         req.setUsername("user2");
@@ -130,7 +130,7 @@ class UserControllerTest {
     @Test
     @DisplayName("更新用户 → 返回 R.ok() code=0 data=null")
     void update_shouldReturnOk() {
-        doNothing().when(sysUserService).update(any(SysUser.class), nullable(String.class));
+        doNothing().when(sysUserService).updateWithAssociations(any(SysUser.class), nullable(String.class), isNull(), isNull());
 
         UserController.UserFormRequest req = new UserController.UserFormRequest();
         req.setId(1L);
@@ -142,7 +142,7 @@ class UserControllerTest {
 
         assertThat(result.getCode()).as("成功码应为 0").isZero();
         assertThat(result.getData()).as("无数据体").isNull();
-        verify(sysUserService).update(any(SysUser.class), nullable(String.class));
+        verify(sysUserService).updateWithAssociations(any(SysUser.class), nullable(String.class), isNull(), isNull());
     }
 
     // ==================== DELETE /{id} — 删除 ====================

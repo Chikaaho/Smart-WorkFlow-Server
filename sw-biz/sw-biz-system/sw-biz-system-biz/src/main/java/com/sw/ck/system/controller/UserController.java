@@ -5,11 +5,13 @@ import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
 import com.sw.ck.system.entity.SysUser;
 import com.sw.ck.system.service.SysUserService;
+import com.sw.ck.system.service.UserPageQuery;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
@@ -37,6 +39,8 @@ public class UserController {
         private Integer sex;
         private Integer status;
         private Long deptId;
+        private List<Long> roleIds;
+        private List<Long> postIds;
         /** 明文密码 — 新建时必填，更新时为空表示不修改 */
         private String plainPassword;
     }
@@ -48,12 +52,11 @@ public class UserController {
     @PreAuthorize("@ss.hasPermi('system:user:list')")
     public R<PageResult<SysUser>> page(@RequestParam(defaultValue = "1") long pageNum,
                                         @RequestParam(defaultValue = "10") long pageSize,
-                                        @RequestBody(required = false) SysUser query) {
+                                        @RequestBody(required = false) UserPageQuery query) {
         PageParam pageParam = new PageParam();
         pageParam.setPageNum(pageNum);
         pageParam.setPageSize(pageSize);
-        // SysUserService.page(PageParam) 仅接受 PageParam（无 query 筛选）
-        return R.ok(sysUserService.page(pageParam));
+        return R.ok(query == null ? sysUserService.page(pageParam) : sysUserService.page(pageParam, query));
     }
 
     /**
@@ -70,9 +73,11 @@ public class UserController {
      */
     @PostMapping
     @PreAuthorize("@ss.hasPermi('system:user:create')")
+    @Transactional(rollbackFor = Exception.class)
     public R<Long> create(@Valid @RequestBody UserFormRequest req) {
         SysUser user = toEntity(req);
-        return R.ok(sysUserService.create(user, req.getPlainPassword()));
+        Long id = sysUserService.createWithAssociations(user, req.getPlainPassword(), req.getRoleIds(), req.getPostIds());
+        return R.ok(id);
     }
 
     /**
@@ -80,9 +85,10 @@ public class UserController {
      */
     @PutMapping
     @PreAuthorize("@ss.hasPermi('system:user:update')")
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> update(@Valid @RequestBody UserFormRequest req) {
         SysUser user = toEntity(req);
-        sysUserService.update(user, req.getPlainPassword());
+        sysUserService.updateWithAssociations(user, req.getPlainPassword(), req.getRoleIds(), req.getPostIds());
         return R.ok();
     }
 
@@ -109,6 +115,16 @@ public class UserController {
         return R.ok();
     }
 
+    @GetMapping("/{id}/posts")
+    @PreAuthorize("@ss.hasPermi('system:user:list')")
+    public R<List<Long>> posts(@PathVariable Long id) { return R.ok(sysUserService.listPostIds(id)); }
+
+    @PutMapping("/{id}/posts")
+    @PreAuthorize("@ss.hasPermi('system:user:update')")
+    public R<Void> updatePosts(@PathVariable Long id, @RequestBody List<Long> postIds) {
+        sysUserService.updatePostIds(id, postIds); return R.ok();
+    }
+
     /** UserFormRequest → SysUser 转换 */
     private SysUser toEntity(UserFormRequest req) {
         SysUser user = new SysUser();
@@ -120,6 +136,8 @@ public class UserController {
         user.setSex(req.getSex());
         user.setStatus(req.getStatus());
         user.setDeptId(req.getDeptId());
+        user.setRoleIds(req.getRoleIds());
+        user.setPostIds(req.getPostIds());
         return user;
     }
 }

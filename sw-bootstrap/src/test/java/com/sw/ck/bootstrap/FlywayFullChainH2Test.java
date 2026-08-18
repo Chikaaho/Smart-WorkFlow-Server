@@ -74,15 +74,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(31, result.migrationsExecuted,
-                "全链迁移计数应为 31（含 P24 V31），实际: " + result.migrationsExecuted);
+        assertEquals(32, result.migrationsExecuted,
+                "全链迁移计数应为 32（含用户岗位 V32），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 31 条，包含 BPM V8/V14/P24 V31")
+    @DisplayName("全链迁移后：info().applied() 共 32 条，包含 BPM V8/V14/P24 V31/V32")
     void appliedMigrationCount_shouldBe31() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(31, applied.length, "已应用迁移数应为 31");
+        assertEquals(32, applied.length, "已应用迁移数应为 32");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;

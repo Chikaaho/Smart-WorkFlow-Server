@@ -138,4 +138,17 @@ create table sys_role_dept (
     role_id         bigint          not null,
     dept_id         bigint          not null
 );
+
+create table sys_post (
+    id bigint not null primary key, create_time timestamp not null default current_timestamp, create_by bigint,
+    update_time timestamp not null default current_timestamp, update_by bigint, deleted smallint not null default 0,
+    tenant_id bigint not null default 0, version bigint not null default 0, code varchar(50) not null,
+    name varchar(100) not null, sort integer not null default 0, status smallint not null default 0, description varchar(255)
+);
+create table sys_user_post (
+    id bigint not null primary key, create_time timestamp not null default current_timestamp, create_by bigint,
+    update_time timestamp not null default current_timestamp, update_by bigint, deleted smallint not null default 0,
+    tenant_id bigint not null default 0, version bigint not null default 0, user_id bigint not null, post_id bigint not null
+);
+create unique index uk_sys_user_post_tenant on sys_user_post (tenant_id, user_id, post_id, deleted);
 create unique index uk_sys_role_dept on sys_role_dept (role_id, dept_id);

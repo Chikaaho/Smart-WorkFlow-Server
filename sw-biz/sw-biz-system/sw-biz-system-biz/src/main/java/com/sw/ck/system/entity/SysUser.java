@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.sw.ck.common.entity.BaseEntity;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import java.util.List;
 
 /**
  * 系统用户表。
@@ -53,4 +54,10 @@ public class SysUser extends BaseEntity {
     /** 头像 URL（V1 DDL 已有 `avatar varchar(200)` 列，此处补映射） */
     @TableField("avatar")
     private String avatar;
+
+    @TableField(exist = false)
+    private List<Long> roleIds;
+
+    @TableField(exist = false)
+    private List<Long> postIds;
 }

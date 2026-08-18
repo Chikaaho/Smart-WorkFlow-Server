@@ -11,6 +11,10 @@ import com.sw.ck.security.holder.LoginUserHolder;
 import com.sw.ck.system.datascope.DeptScopeProviderImpl;
 import com.sw.ck.system.entity.SysUser;
 import com.sw.ck.system.mapper.SysDeptMapper;
+import com.sw.ck.system.mapper.SysUserRoleMapper;
+import com.sw.ck.system.mapper.SysUserPostMapper;
+import com.sw.ck.system.mapper.SysRoleMapper;
+import com.sw.ck.system.mapper.SysPostMapper;
 import com.sw.ck.system.service.SysUserService;
 import com.sw.ck.system.service.impl.SysUserServiceImpl;
 import org.junit.jupiter.api.AfterEach;
@@ -251,8 +255,10 @@ class SysUserDataScopeTest {
         }
 
         @Bean
-        public SysUserService sysUserService(PasswordEncoder passwordEncoder) {
-            return new SysUserServiceImpl(passwordEncoder);
+        public SysUserService sysUserService(PasswordEncoder passwordEncoder, SysUserRoleMapper userRoleMapper,
+                                             SysUserPostMapper userPostMapper, SysRoleMapper roleMapper,
+                                             SysPostMapper postMapper) {
+            return new SysUserServiceImpl(passwordEncoder, userRoleMapper, userPostMapper, roleMapper, postMapper);
         }
 
         @Bean
