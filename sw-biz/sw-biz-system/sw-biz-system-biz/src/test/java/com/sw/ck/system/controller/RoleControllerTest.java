@@ -7,6 +7,7 @@ import com.sw.ck.system.entity.SysRole;
 import com.sw.ck.system.service.SysRoleService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.util.List;
 
@@ -136,5 +137,28 @@ class RoleControllerTest {
 
         assertThat(result.getCode()).isZero();
         verify(sysRoleService).delete(1L);
+    }
+
+    @Test
+    @DisplayName("菜单权限关系 → 支持读取、清空/重授并透传 roleId")
+    void menus_shouldReadAndWrite() {
+        when(sysRoleService.listMenuIds(2L)).thenReturn(List.of(18L, 200L));
+
+        R<List<Long>> read = controller.menus(2L);
+        R<Void> write = controller.updateMenus(2L, List.of());
+
+        assertThat(read.getData()).containsExactly(18L, 200L);
+        assertThat(write.getCode()).isZero();
+        verify(sysRoleService).listMenuIds(2L);
+        verify(sysRoleService).updateMenuIds(2L, List.of());
+    }
+
+    @Test
+    @DisplayName("角色变更端点 → 受 system:role 权限保护")
+    void governanceEndpoints_shouldHaveMethodPermissions() throws NoSuchMethodException {
+        assertThat(RoleController.class.getMethod("updateMenus", Long.class, List.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('system:role:update')");
+        assertThat(RoleController.class.getMethod("delete", Long.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('system:role:delete')");
     }
 }

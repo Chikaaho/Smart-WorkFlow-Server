@@ -9,6 +9,8 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
+import java.util.List;
 
 /**
  * 用户管理控制器。
@@ -43,6 +45,7 @@ public class UserController {
      * 分页查询用户。
      */
     @PostMapping("/page")
+    @PreAuthorize("@ss.hasPermi('system:user:list')")
     public R<PageResult<SysUser>> page(@RequestParam(defaultValue = "1") long pageNum,
                                         @RequestParam(defaultValue = "10") long pageSize,
                                         @RequestBody(required = false) SysUser query) {
@@ -57,6 +60,7 @@ public class UserController {
      * 获取用户详情。
      */
     @GetMapping("/{id}")
+    @PreAuthorize("@ss.hasPermi('system:user:list')")
     public R<SysUser> get(@PathVariable Long id) {
         return R.ok(sysUserService.getById(id));
     }
@@ -65,6 +69,7 @@ public class UserController {
      * 创建用户。
      */
     @PostMapping
+    @PreAuthorize("@ss.hasPermi('system:user:create')")
     public R<Long> create(@Valid @RequestBody UserFormRequest req) {
         SysUser user = toEntity(req);
         return R.ok(sysUserService.create(user, req.getPlainPassword()));
@@ -74,6 +79,7 @@ public class UserController {
      * 更新用户。
      */
     @PutMapping
+    @PreAuthorize("@ss.hasPermi('system:user:update')")
     public R<Void> update(@Valid @RequestBody UserFormRequest req) {
         SysUser user = toEntity(req);
         sysUserService.update(user, req.getPlainPassword());
@@ -84,8 +90,22 @@ public class UserController {
      * 删除用户（逻辑删除）。
      */
     @DeleteMapping("/{id}")
+    @PreAuthorize("@ss.hasPermi('system:user:delete')")
     public R<Void> delete(@PathVariable Long id) {
         sysUserService.delete(id);
+        return R.ok();
+    }
+
+    @GetMapping("/{id}/roles")
+    @PreAuthorize("@ss.hasPermi('system:user:list')")
+    public R<List<Long>> roles(@PathVariable Long id) {
+        return R.ok(sysUserService.listRoleIds(id));
+    }
+
+    @PutMapping("/{id}/roles")
+    @PreAuthorize("@ss.hasPermi('system:user:update')")
+    public R<Void> updateRoles(@PathVariable Long id, @RequestBody List<Long> roleIds) {
+        sysUserService.updateRoleIds(id, roleIds);
         return R.ok();
     }
 

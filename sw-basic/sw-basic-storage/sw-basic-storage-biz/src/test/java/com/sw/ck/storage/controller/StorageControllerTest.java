@@ -15,6 +15,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -42,6 +43,17 @@ class StorageControllerTest {
     private final StorageFileService storageFileService = mock(StorageFileService.class);
 
     private final StorageController controller = new StorageController(storageFacade, storageFileService);
+
+    @Test
+    @DisplayName("storage 方法边界 → 上传/删除/下载都有显式 permission")
+    void endpoints_shouldDeclareExplicitPermissions() throws NoSuchMethodException {
+        assertThat(StorageController.class.getMethod("upload", org.springframework.web.multipart.MultipartFile.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('storage:upload')");
+        assertThat(StorageController.class.getMethod("delete", String.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('storage:delete')");
+        assertThat(StorageController.class.getMethod("download", String.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('storage:download')");
+    }
 
     // ==================== 测试数据工厂 ====================
 

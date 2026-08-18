@@ -2,6 +2,7 @@ package com.sw.ck.bootstrap;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
+import org.flywaydb.core.api.FlywayException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,7 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * BPM 迁移链纳入真实 H2 全链 Flyway 验证的永久测试（不启动 Spring 上下文）。
@@ -72,17 +74,18 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(30, result.migrationsExecuted,
-                "全链迁移计数应为 30（28 条原口径 + BPM V8/V14 两枚），实际: " + result.migrationsExecuted);
+        assertEquals(31, result.migrationsExecuted,
+                "全链迁移计数应为 31（含 P24 V31），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 30 条，包含 BPM V8/V14")
-    void appliedMigrationCount_shouldBe30() {
+    @DisplayName("全链迁移后：info().applied() 共 31 条，包含 BPM V8/V14/P24 V31")
+    void appliedMigrationCount_shouldBe31() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(30, applied.length, "已应用迁移数应为 30");
+        assertEquals(31, applied.length, "已应用迁移数应为 31");
         boolean v8Seen = false;
         boolean v14Seen = false;
+        boolean v31Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -90,15 +93,77 @@ class FlywayFullChainH2Test {
             if ("14".equals(info.getVersion().getVersion())) {
                 v14Seen = true;
             }
+            if ("31".equals(info.getVersion().getVersion())) {
+                v31Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
+        assertTrue(v31Seen, "P24 V31 应已应用");
     }
 
     @Test
     @DisplayName("全链迁移后：再次 validate() 通过（无校验和/缺失迁移问题）")
     void validate_shouldPass() {
         flyway.validate();
+    }
+
+    @Test
+    @DisplayName("P24 V31：admin seed 字段与 job/storage 显式权限完整")
+    void adminSeed_shouldHaveStableRoleAndPermissions() throws SQLException {
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT name, code, status, data_scope, built_in FROM sys_role WHERE id = 2")) {
+                assertTrue(rs.next(), "普通 admin 角色应存在");
+                assertEquals("管理员", rs.getString("name"));
+                assertEquals("admin", rs.getString("code"));
+                assertEquals(1, rs.getInt("status"));
+                assertEquals(0, rs.getInt("data_scope"));
+                assertTrue(!rs.getBoolean("built_in"), "admin 不得标记为内置角色");
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM sys_role_menu rm JOIN sys_menu m ON m.id = rm.menu_id "
+                            + "WHERE rm.role_id = 2 AND m.permission IN "
+                            + "('job:create','job:update','job:delete','job:pause','job:resume','job:trigger',"
+                            + "'storage:upload','storage:delete','storage:download')")) {
+                assertTrue(rs.next());
+                assertEquals(9, rs.getInt(1), "admin 应显式拥有 job/storage 全部方法权限");
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT code, built_in FROM sys_role WHERE id = 1")) {
+                assertTrue(rs.next());
+                assertEquals("superadmin", rs.getString("code"));
+                assertTrue(rs.getBoolean("built_in"), "superadmin 应保持内置角色");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("P24 V31：既有 admin/id=2 冲突必须显式失败")
+    void adminSeedConflict_shouldFailExplicitly() throws SQLException {
+        String conflictUrl = "jdbc:h2:mem:flyway_p24_conflict;DB_CLOSE_DELAY=-1";
+        String[] locations = Arrays.stream(APP_LOCATIONS)
+                .map(location -> location.replace("{vendor}", "h2"))
+                .toArray(String[]::new);
+        Flyway beforeV31 = Flyway.configure()
+                .dataSource(conflictUrl, USER, PASSWORD)
+                .locations(locations)
+                .target("30")
+                .load();
+        beforeV31.migrate();
+        try (Connection conn = DriverManager.getConnection(conflictUrl, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("INSERT INTO sys_role (id, create_time, update_time, deleted, tenant_id, version, "
+                    + "name, code, sort, status, data_scope, built_in, remark) VALUES "
+                    + "(2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, '既有角色', 'admin', 1, 1, 0, FALSE, 'collision')");
+        }
+        Flyway afterV31 = Flyway.configure()
+                .dataSource(conflictUrl, USER, PASSWORD)
+                .locations(locations)
+                .load();
+        assertThrows(FlywayException.class, afterV31::migrate,
+                "既有 admin/id=2 冲突不得静默跳过 V31");
     }
 
     @Test

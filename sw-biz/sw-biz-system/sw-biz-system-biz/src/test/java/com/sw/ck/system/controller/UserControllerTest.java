@@ -7,6 +7,7 @@ import com.sw.ck.system.entity.SysUser;
 import com.sw.ck.system.service.SysUserService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.util.List;
 
@@ -156,5 +157,26 @@ class UserControllerTest {
         assertThat(result.getCode()).as("成功码应为 0").isZero();
         assertThat(result.getData()).as("无数据体").isNull();
         verify(sysUserService).delete(1L);
+    }
+
+    @Test
+    @DisplayName("用户角色关系 → 支持读取、解绑并透传 userId")
+    void roles_shouldReadAndWrite() {
+        when(sysUserService.listRoleIds(1L)).thenReturn(List.of(2L));
+
+        R<List<Long>> read = controller.roles(1L);
+        R<Void> write = controller.updateRoles(1L, List.of());
+
+        assertThat(read.getData()).containsExactly(2L);
+        assertThat(write.getCode()).isZero();
+        verify(sysUserService).listRoleIds(1L);
+        verify(sysUserService).updateRoleIds(1L, List.of());
+    }
+
+    @Test
+    @DisplayName("用户角色写端点 → 受 system:user:update 权限保护")
+    void roleBindingEndpoint_shouldHaveUpdatePermission() throws NoSuchMethodException {
+        assertThat(UserController.class.getMethod("updateRoles", Long.class, List.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('system:user:update')");
     }
 }

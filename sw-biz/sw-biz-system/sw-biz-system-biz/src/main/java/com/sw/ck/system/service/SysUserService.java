@@ -4,6 +4,7 @@ import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.service.BaseService;
 import com.sw.ck.system.entity.SysUser;
+import java.util.List;
 
 /**
  * 系统用户 Service。
@@ -45,4 +46,8 @@ public interface SysUserService extends BaseService<SysUser> {
      * 根据 ID 查询用户。
      */
     SysUser getById(Long id);
+
+    List<Long> listRoleIds(Long userId);
+
+    void updateRoleIds(Long userId, List<Long> roleIds);
 }

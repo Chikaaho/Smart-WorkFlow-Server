@@ -12,6 +12,7 @@ import com.sw.ck.job.service.QuartzSchedulerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * 定时任务定义控制器。
@@ -39,6 +40,7 @@ public class JobInfoController {
      * 分页查询任务定义。
      */
     @PostMapping("/page")
+    @PreAuthorize("@ss.hasPermi('job:list')")
     public R<PageResult<JobInfo>> page(@RequestParam(defaultValue = "1") long pageNum,
                                         @RequestParam(defaultValue = "10") long pageSize,
                                         @RequestBody(required = false) JobInfo query) {
@@ -52,6 +54,7 @@ public class JobInfoController {
      * 按 ID 查询任务定义。
      */
     @GetMapping("/{id}")
+    @PreAuthorize("@ss.hasPermi('job:list')")
     public R<JobInfo> getById(@PathVariable Long id) {
         JobInfo jobInfo = jobInfoService.getById(id);
         if (jobInfo == null) {
@@ -68,6 +71,7 @@ public class JobInfoController {
      * </p>
      */
     @PostMapping
+    @PreAuthorize("@ss.hasPermi('job:create')")
     public R<Long> create(@RequestBody JobInfo jobInfo) {
         // 参数校验
         if (jobInfo.getJobName() == null || jobInfo.getJobName().isBlank()) {
@@ -117,6 +121,7 @@ public class JobInfoController {
      * </p>
      */
     @PutMapping
+    @PreAuthorize("@ss.hasPermi('job:update')")
     public R<Void> update(@RequestBody JobInfo jobInfo) {
         if (jobInfo.getId() == null) {
             throw new BaseException(CommonErrorCode.PARAM_ERROR.getCode(), "任务 ID 不能为空");
@@ -156,6 +161,7 @@ public class JobInfoController {
      * </p>
      */
     @DeleteMapping("/{id}")
+    @PreAuthorize("@ss.hasPermi('job:delete')")
     public R<Void> delete(@PathVariable Long id) {
         JobInfo jobInfo = jobInfoService.getById(id);
         if (jobInfo == null) {
@@ -180,6 +186,7 @@ public class JobInfoController {
      * </p>
      */
     @PostMapping("/{id}/pause")
+    @PreAuthorize("@ss.hasPermi('job:pause')")
     public R<Void> pause(@PathVariable Long id) {
         JobInfo jobInfo = jobInfoService.getById(id);
         if (jobInfo == null) {
@@ -209,6 +216,7 @@ public class JobInfoController {
      * </p>
      */
     @PostMapping("/{id}/resume")
+    @PreAuthorize("@ss.hasPermi('job:resume')")
     public R<Void> resume(@PathVariable Long id) {
         JobInfo jobInfo = jobInfoService.getById(id);
         if (jobInfo == null) {
@@ -246,6 +254,7 @@ public class JobInfoController {
      * </p>
      */
     @PostMapping("/{id}/trigger")
+    @PreAuthorize("@ss.hasPermi('job:trigger')")
     public R<Void> trigger(@PathVariable Long id) {
         JobInfo jobInfo = jobInfoService.getById(id);
         if (jobInfo == null) {

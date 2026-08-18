@@ -9,11 +9,14 @@ import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.service.BaseServiceImpl;
 import com.sw.ck.system.entity.SysRole;
 import com.sw.ck.system.entity.SysRoleDept;
+import com.sw.ck.system.entity.SysRoleMenu;
 import com.sw.ck.system.mapper.SysRoleDeptMapper;
 import com.sw.ck.system.mapper.SysRoleMapper;
+import com.sw.ck.system.mapper.SysRoleMenuMapper;
 import com.sw.ck.system.service.SysRoleService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -31,14 +34,24 @@ public class SysRoleServiceImpl
         implements SysRoleService {
 
     private final SysRoleDeptMapper sysRoleDeptMapper;
+    private final SysRoleMenuMapper sysRoleMenuMapper;
 
     public SysRoleServiceImpl(SysRoleDeptMapper sysRoleDeptMapper) {
+        this(sysRoleDeptMapper, null);
+    }
+
+    @Autowired
+    public SysRoleServiceImpl(SysRoleDeptMapper sysRoleDeptMapper, SysRoleMenuMapper sysRoleMenuMapper) {
         this.sysRoleDeptMapper = sysRoleDeptMapper;
+        this.sysRoleMenuMapper = sysRoleMenuMapper;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long create(SysRole role) {
+        if (Boolean.TRUE.equals(role.getBuiltIn()) || "superadmin".equals(role.getCode())) {
+            throw new BaseException(CommonErrorCode.PARAM_ERROR, "不可创建内置超管角色");
+        }
         // 校验编码唯一性
         if (getByCode(role.getCode()) != null) {
             throw new BaseException(CommonErrorCode.PARAM_ERROR, "角色编码已存在");
@@ -52,6 +65,7 @@ public class SysRoleServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void update(SysRole role) {
+        assertMutable(role.getId());
         // 校验编码唯一性（排除自身）
         SysRole existing = getByCode(role.getCode());
         if (existing != null && !existing.getId().equals(role.getId())) {
@@ -67,6 +81,7 @@ public class SysRoleServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
+        assertMutable(id);
         removeById(id);
     }
 
@@ -103,6 +118,37 @@ public class SysRoleServiceImpl
     @Override
     public SysRole getByCode(String code) {
         return lambdaQuery().eq(SysRole::getCode, code).one();
+    }
+
+    @Override
+    public List<Long> listMenuIds(Long roleId) {
+        return sysRoleMenuMapper.selectList(new LambdaQueryWrapper<SysRoleMenu>()
+                        .eq(SysRoleMenu::getRoleId, roleId))
+                .stream().map(SysRoleMenu::getMenuId).filter(Objects::nonNull).distinct().toList();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateMenuIds(Long roleId, List<Long> menuIds) {
+        assertMutable(roleId);
+        sysRoleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
+        if (menuIds == null) {
+            return;
+        }
+        menuIds.stream().filter(Objects::nonNull).distinct().forEach(menuId -> {
+            SysRoleMenu relation = new SysRoleMenu();
+            relation.setRoleId(roleId);
+            relation.setMenuId(menuId);
+            sysRoleMenuMapper.insert(relation);
+        });
+    }
+
+    private void assertMutable(Long roleId) {
+        SysRole role = super.getById(roleId);
+        if (role != null && Boolean.TRUE.equals(role.getBuiltIn())
+                && "superadmin".equals(role.getCode())) {
+            throw new BaseException(CommonErrorCode.PARAM_ERROR, "内置超管角色不可修改或删除");
+        }
     }
 
     /**

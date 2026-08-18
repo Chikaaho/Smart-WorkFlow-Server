@@ -5,6 +5,8 @@ import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.service.BaseService;
 import com.sw.ck.system.entity.SysRole;
 
+import java.util.List;
+
 /**
  * 系统角色 Service。
  */
@@ -34,4 +36,8 @@ public interface SysRoleService extends BaseService<SysRole> {
      * 根据编码获取角色。
      */
     SysRole getByCode(String code);
+
+    List<Long> listMenuIds(Long roleId);
+
+    void updateMenuIds(Long roleId, List<Long> menuIds);
 }

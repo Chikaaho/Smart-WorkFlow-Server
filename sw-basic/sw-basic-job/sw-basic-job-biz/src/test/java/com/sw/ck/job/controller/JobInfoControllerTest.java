@@ -11,6 +11,7 @@ import com.sw.ck.job.service.QuartzSchedulerService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -34,6 +35,23 @@ class JobInfoControllerTest {
     private final JobInfoService jobInfoService = mock(JobInfoService.class);
     private final QuartzSchedulerService quartzSchedulerService = mock(QuartzSchedulerService.class);
     private final JobInfoController controller = new JobInfoController(jobInfoService, quartzSchedulerService);
+
+    @Test
+    @DisplayName("job 方法边界 → 每个写操作都有显式 permission")
+    void endpoints_shouldDeclareExplicitPermissions() throws NoSuchMethodException {
+        assertThat(JobInfoController.class.getMethod("create", JobInfo.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:create')");
+        assertThat(JobInfoController.class.getMethod("update", JobInfo.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:update')");
+        assertThat(JobInfoController.class.getMethod("delete", Long.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:delete')");
+        assertThat(JobInfoController.class.getMethod("pause", Long.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:pause')");
+        assertThat(JobInfoController.class.getMethod("resume", Long.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:resume')");
+        assertThat(JobInfoController.class.getMethod("trigger", Long.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("@ss.hasPermi('job:trigger')");
+    }
 
     // ==================== 测试数据工厂 ====================
 

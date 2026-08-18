@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -46,6 +47,7 @@ public class StorageController {
      * 上传文件。
      */
     @PostMapping("/upload")
+    @PreAuthorize("@ss.hasPermi('storage:upload')")
     public R<StorageUploadResult> upload(@RequestParam("file") MultipartFile file) throws IOException {
         if (file.isEmpty()) {
             throw new BaseException(CommonErrorCode.PARAM_ERROR.getCode(), "上传文件不能为空");
@@ -61,6 +63,7 @@ public class StorageController {
      * 文件列表（分页，create_time 倒序；数据范围纳管入口，见 {@code StorageFileService#pageFiles}）。
      */
     @GetMapping
+    @PreAuthorize("@ss.hasPermi('storage:list')")
     public R<Page<StorageFile>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
@@ -71,6 +74,7 @@ public class StorageController {
      * 文件详情。
      */
     @GetMapping("/{storageKey}")
+    @PreAuthorize("@ss.hasPermi('storage:list')")
     public R<StorageFile> info(@PathVariable String storageKey) {
         StorageFile file = storageFileService.findByStorageKey(storageKey);
         if (file == null) {
@@ -83,6 +87,7 @@ public class StorageController {
      * 删除文件。
      */
     @DeleteMapping("/{storageKey}")
+    @PreAuthorize("@ss.hasPermi('storage:delete')")
     public R<Void> delete(@PathVariable String storageKey) {
         storageFacade.delete(storageKey);
         return R.ok();
@@ -92,6 +97,7 @@ public class StorageController {
      * 下载文件。
      */
     @GetMapping("/{storageKey}/download")
+    @PreAuthorize("@ss.hasPermi('storage:download')")
     public ResponseEntity<InputStreamResource> download(@PathVariable String storageKey) {
         StorageFile file = storageFileService.findByStorageKey(storageKey);
         if (file == null) {

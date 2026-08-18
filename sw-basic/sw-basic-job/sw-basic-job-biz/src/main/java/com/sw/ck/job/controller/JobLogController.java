@@ -10,6 +10,7 @@ import com.sw.ck.job.service.JobLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * 定时任务执行日志控制器。
@@ -38,6 +39,7 @@ public class JobLogController {
      * @return 分页日志列表
      */
     @PostMapping("/page")
+    @PreAuthorize("@ss.hasPermi('job:log')")
     public R<PageResult<JobLog>> page(@RequestParam Long jobId,
                                        @RequestParam(defaultValue = "1") long pageNum,
                                        @RequestParam(defaultValue = "10") long pageSize) {
@@ -55,6 +57,7 @@ public class JobLogController {
      * 按 ID 查询单条日志详情。
      */
     @GetMapping("/{id}")
+    @PreAuthorize("@ss.hasPermi('job:log')")
     public R<JobLog> getById(@PathVariable Long id) {
         JobLog jobLog = jobLogService.getById(id);
         if (jobLog == null) {
