@@ -2,6 +2,7 @@ package com.sw.ck.system.controller;
 
 import com.sw.ck.common.response.R;
 import com.sw.ck.system.entity.SysDept;
+import com.sw.ck.system.service.DeptQuery;
 import com.sw.ck.system.service.SysDeptService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
@@ -22,11 +23,21 @@ public class DeptController {
     }
 
     /**
-     * 查询部门树（返回全量排序列表，前端自行转换为树形结构）。
+     * 查询部门树。
+     * <p>
+     * 可选查询参数：{@code name} 部门名称包含匹配（trim 后空白等价于未填写）；
+     * {@code status} 部门状态 0=正常 1=停用（非法值显式报错 PARAM_ERROR）。
+     * 无参数时返回全量排序列表（前端自行组装树），行为与历史版本完全一致。
+     * 筛选结果仅含直接命中节点及其必要祖先路径，按 sort 升序、去重。
+     * </p>
      */
     @GetMapping("/tree")
-    public R<List<SysDept>> tree() {
-        return R.ok(sysDeptService.listTree());
+    public R<List<SysDept>> tree(@RequestParam(required = false) String name,
+                                 @RequestParam(required = false) Integer status) {
+        DeptQuery query = new DeptQuery();
+        query.setName(name);
+        query.setStatus(status);
+        return R.ok(sysDeptService.listTree(query));
     }
 
     /**

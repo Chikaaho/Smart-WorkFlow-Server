@@ -2,9 +2,11 @@ package com.sw.ck.system.controller;
 
 import com.sw.ck.common.response.R;
 import com.sw.ck.system.entity.SysDept;
+import com.sw.ck.system.service.DeptQuery;
 import com.sw.ck.system.service.SysDeptService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Collections;
 import java.util.List;
@@ -25,7 +27,7 @@ class DeptControllerTest {
     private final DeptController controller = new DeptController(sysDeptService);
 
     @Test
-    @DisplayName("GET /tree → 返回部门列表")
+    @DisplayName("GET /tree 无参数 → 返回部门列表（兼容历史调用）")
     void tree_shouldReturnList() {
         SysDept dept1 = new SysDept();
         dept1.setId(1L);
@@ -38,26 +40,59 @@ class DeptControllerTest {
         dept2.setCode("dev");
         dept2.setParentId(1L);
 
-        when(sysDeptService.listTree()).thenReturn(List.of(dept1, dept2));
+        when(sysDeptService.listTree(any(DeptQuery.class))).thenReturn(List.of(dept1, dept2));
 
-        R<List<SysDept>> result = controller.tree();
+        R<List<SysDept>> result = controller.tree(null, null);
 
         assertThat(result.getCode()).as("成功码应为 0").isZero();
         assertThat(result.getData()).hasSize(2);
         assertThat(result.getData().get(0).getName()).isEqualTo("总公司");
         assertThat(result.getData().get(1).getParentId()).isEqualTo(1L);
-        verify(sysDeptService).listTree();
+        verify(sysDeptService).listTree(any(DeptQuery.class));
     }
 
     @Test
     @DisplayName("GET /tree 空列表 → 返回空数组不抛异常")
     void tree_empty_shouldReturnEmptyList() {
-        when(sysDeptService.listTree()).thenReturn(Collections.emptyList());
+        when(sysDeptService.listTree(any(DeptQuery.class))).thenReturn(Collections.emptyList());
 
-        R<List<SysDept>> result = controller.tree();
+        R<List<SysDept>> result = controller.tree(null, null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("GET /tree 名称+状态 → 透传查询条件给 Service")
+    void tree_withNameAndStatus_shouldPassQueryToService() {
+        SysDept dept = new SysDept();
+        dept.setId(2L);
+        dept.setName("研发部");
+
+        when(sysDeptService.listTree(any(DeptQuery.class))).thenReturn(List.of(dept));
+
+        R<List<SysDept>> result = controller.tree("研发", 0);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).extracting(SysDept::getName).containsExactly("研发部");
+        ArgumentCaptor<DeptQuery> captor = ArgumentCaptor.forClass(DeptQuery.class);
+        verify(sysDeptService).listTree(captor.capture());
+        assertThat(captor.getValue().getName()).isEqualTo("研发");
+        assertThat(captor.getValue().getStatus()).isZero();
+    }
+
+    @Test
+    @DisplayName("GET /tree 仅状态 → 透传状态、名称留空")
+    void tree_withStatusOnly_shouldPassStatus() {
+        when(sysDeptService.listTree(any(DeptQuery.class))).thenReturn(Collections.emptyList());
+
+        R<List<SysDept>> result = controller.tree(null, 1);
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<DeptQuery> captor = ArgumentCaptor.forClass(DeptQuery.class);
+        verify(sysDeptService).listTree(captor.capture());
+        assertThat(captor.getValue().getName()).isNull();
+        assertThat(captor.getValue().getStatus()).isEqualTo(1);
     }
 
     @Test
