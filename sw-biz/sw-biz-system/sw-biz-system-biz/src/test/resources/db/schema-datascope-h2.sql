@@ -152,3 +152,33 @@ create table sys_user_post (
 );
 create unique index uk_sys_user_post_tenant on sys_user_post (tenant_id, user_id, post_id, deleted);
 create unique index uk_sys_role_dept on sys_role_dept (role_id, dept_id);
+
+-- P28/I36（D112）：用户组表（与生产 V34 一致）
+create table sys_user_group (
+    id bigint not null,
+    create_time timestamp,
+    create_by bigint,
+    update_time timestamp,
+    update_by bigint,
+    deleted smallint not null default 0,
+    tenant_id bigint not null default 0,
+    version bigint not null default 0,
+    group_code varchar(64) not null,
+    group_name varchar(64) not null,
+    status smallint not null default 0,
+    remark varchar(255)
+);
+create unique index uk_sys_user_group_code on sys_user_group (tenant_id, group_code, deleted);
+create table sys_user_group_member (
+    id bigint not null,
+    create_time timestamp,
+    create_by bigint,
+    update_time timestamp,
+    update_by bigint,
+    deleted smallint not null default 0,
+    tenant_id bigint not null default 0,
+    version bigint not null default 0,
+    group_id bigint not null,
+    user_id bigint not null
+);
+create unique index uk_sys_user_group_member on sys_user_group_member (tenant_id, group_id, user_id, deleted);

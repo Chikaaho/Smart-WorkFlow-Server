@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>
  * 使用 zonky embedded-postgres 启动真实 PostgreSQL 17.5 二进制（macOS arm64），
  * 独立 Flyway 实例，7 个 locations 与 {@code application.yml} 完全一致
- * （{vendor} 按 PostgreSQL 连接解析为 postgresql）。全链共 33 条迁移。
+ * （{vendor} 按 PostgreSQL 连接解析为 postgresql）。全链共 34 条迁移。
  * </p>
  * <p>
  * 本测试是 H2 侧 {@link FlywayFullChainH2Test} 的 PG 镜像，并承载 V13 修复的回归守卫：
@@ -86,8 +86,8 @@ class FlywayFullChainPostgresTest {
                 .load()
                 .migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(33, result.migrationsExecuted,
-                "全链迁移计数应为 33（含 BPM V8/V14、form V7/V12、V32 用户岗位、V33 大模型菜单 seed），实际: "
+        assertEquals(34, result.migrationsExecuted,
+                "全链迁移计数应为 34（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组），实际: "
                         + result.migrationsExecuted);
     }
 
@@ -100,13 +100,14 @@ class FlywayFullChainPostgresTest {
 
     @Test
     @DisplayName("全链迁移后：info().applied() 共 33 条，包含 BPM V8/V14/P24 V31/V32/V33")
-    void appliedMigrationCount_shouldBe33() {
+    void appliedMigrationCount_shouldBe34() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway().info().applied();
-        assertEquals(33, applied.length, "已应用迁移数应为 33");
+        assertEquals(34, applied.length, "已应用迁移数应为 34");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
         boolean v33Seen = false;
+        boolean v34Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -120,11 +121,15 @@ class FlywayFullChainPostgresTest {
             if ("33".equals(info.getVersion().getVersion())) {
                 v33Seen = true;
             }
+            if ("34".equals(info.getVersion().getVersion())) {
+                v34Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
         assertTrue(v31Seen, "P24 V31 应已应用");
         assertTrue(v33Seen, "V33 大模型菜单 seed 应已应用");
+        assertTrue(v34Seen, "V34 用户组迁移应已应用");
     }
 
     @Test
@@ -213,8 +218,8 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33（共 33），validate() 通过")
-    void upgradeChain_V32_to_V33_shouldPass() throws SQLException {
+    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33/V34（共 34），validate() 通过")
+    void upgradeChain_V32_to_V34_shouldPass() throws SQLException {
         // 模拟既有库：在独立数据库中先迁移至 V32
         try (Connection conn = DriverManager.getConnection(url, USER, PASSWORD);
              Statement stmt = conn.createStatement()) {
@@ -231,14 +236,14 @@ class FlywayFullChainPostgresTest {
         assertTrue(first.success, "先迁移至 V32 应成功");
         assertEquals(32, first.migrationsExecuted, "V32 阶段应执行 32 条，实际: " + first.migrationsExecuted);
 
-        // 既有库全量升级：只应执行 V33 一条
+        // 既有库全量升级：只应执行 V33/V34 两条
         Flyway full = Flyway.configure()
                 .dataSource(upgradeUrl, USER, PASSWORD)
                 .locations(locations)
                 .load();
         MigrateResult second = full.migrate();
-        assertTrue(second.success, "V32→V33 升级链应成功");
-        assertEquals(1, second.migrationsExecuted, "升级链应只执行 V33 一条，实际: " + second.migrationsExecuted);
+        assertTrue(second.success, "V32→链尾升级链应成功");
+        assertEquals(2, second.migrationsExecuted, "升级链应只执行 V33/V34 两条，实际: " + second.migrationsExecuted);
         full.validate();
     }
 
@@ -262,7 +267,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult first = migrate.migrate();
         assertTrue(first.success, "建立既有库应成功");
-        assertEquals(33, first.migrationsExecuted, "既有库应含全部 33 条，实际: " + first.migrationsExecuted);
+        assertEquals(34, first.migrationsExecuted, "既有库应含全部 34 条，实际: " + first.migrationsExecuted);
 
         // 原始 V13 的 L58 内容（修改前）：DROP INDEX IF EXISTS sw_form_def_form_key_key;
         String originalV13Line = "DROP INDEX IF EXISTS sw_form_def_form_key_key;";

@@ -74,19 +74,20 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(33, result.migrationsExecuted,
-                "全链迁移计数应为 33（含 V32 用户岗位、V33 大模型菜单 seed），实际: " + result.migrationsExecuted);
+        assertEquals(34, result.migrationsExecuted,
+                "全链迁移计数应为 34（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 33 条，包含 BPM V8/V14/P24 V31/V32/V33")
-    void appliedMigrationCount_shouldBe33() {
+    @DisplayName("全链迁移后：info().applied() 共 34 条，包含 BPM V8/V14/P24 V31/V32/V33/V34")
+    void appliedMigrationCount_shouldBe34() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(33, applied.length, "已应用迁移数应为 33");
+        assertEquals(34, applied.length, "已应用迁移数应为 34");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
         boolean v33Seen = false;
+        boolean v34Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -100,11 +101,15 @@ class FlywayFullChainH2Test {
             if ("33".equals(info.getVersion().getVersion())) {
                 v33Seen = true;
             }
+            if ("34".equals(info.getVersion().getVersion())) {
+                v34Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
         assertTrue(v31Seen, "P24 V31 应已应用");
         assertTrue(v33Seen, "V33 大模型菜单 seed 应已应用");
+        assertTrue(v34Seen, "V34 用户组迁移应已应用");
     }
 
     @Test
@@ -172,9 +177,9 @@ class FlywayFullChainH2Test {
     }
 
     @Test
-    @DisplayName("V33：V32→V33 升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
-    void upgradeChain_V32_to_V33_shouldPass() throws SQLException {
-        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v33;DB_CLOSE_DELAY=-1";
+    @DisplayName("V33/V34：V32→链尾升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
+    void upgradeChain_V32_to_V34_shouldPass() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v34a;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
                 .map(location -> location.replace("{vendor}", "h2"))
                 .toArray(String[]::new);
@@ -192,8 +197,8 @@ class FlywayFullChainH2Test {
                 .locations(locations)
                 .load();
         MigrateResult second = full.migrate();
-        assertTrue(second.success, "V32→V33 升级链应成功");
-        assertEquals(1, second.migrationsExecuted, "升级链应只执行 V33 一条，实际: " + second.migrationsExecuted);
+        assertTrue(second.success, "V32→链尾升级链应成功");
+        assertEquals(2, second.migrationsExecuted, "升级链应只执行 V33/V34 两条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -225,6 +230,90 @@ class FlywayFullChainH2Test {
                 assertTrue(rs.next());
                 assertEquals(0, rs.getInt(1), "V33 不得自动 seed sys_role_menu（V6/V26 决策沿用）");
             }
+        }
+    }
+
+    @Test
+    @DisplayName("V34：V33→V34 升级链（先至 V33 再全量）执行成功，且用户组表/唯一约束产物正确")
+    void upgradeChain_V33_to_V34_shouldPass() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v34;DB_CLOSE_DELAY=-1";
+        String[] locations = Arrays.stream(APP_LOCATIONS)
+                .map(location -> location.replace("{vendor}", "h2"))
+                .toArray(String[]::new);
+        Flyway toV33 = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .target("33")
+                .load();
+        MigrateResult first = toV33.migrate();
+        assertTrue(first.success, "先迁移至 V33 应成功");
+        assertEquals(33, first.migrationsExecuted, "V33 阶段应执行 33 条，实际: " + first.migrationsExecuted);
+
+        Flyway full = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .load();
+        MigrateResult second = full.migrate();
+        assertTrue(second.success, "V33→V34 升级链应成功");
+        assertEquals(1, second.migrationsExecuted, "升级链应只执行 V34 一条，实际: " + second.migrationsExecuted);
+        full.validate();
+
+        try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
+            DatabaseMetaData md = conn.getMetaData();
+            try (ResultSet rs = md.getTables(null, null, "SYS_USER_GROUP", new String[]{"TABLE"})) {
+                assertTrue(rs.next(), "sys_user_group 表应存在");
+            }
+            try (ResultSet rs = md.getTables(null, null, "SYS_USER_GROUP_MEMBER", new String[]{"TABLE"})) {
+                assertTrue(rs.next(), "sys_user_group_member 表应存在");
+            }
+            boolean ukFound = false;
+            try (ResultSet rs = md.getIndexInfo(null, null, "SYS_USER_GROUP", false, false)) {
+                while (rs.next()) {
+                    if ("UK_SYS_USER_GROUP_CODE".equalsIgnoreCase(rs.getString("INDEX_NAME"))) {
+                        ukFound = true;
+                        break;
+                    }
+                }
+            }
+            assertTrue(ukFound, "唯一索引 uk_sys_user_group_code 应存在");
+        }
+    }
+
+    @Test
+    @DisplayName("V34：用户组逻辑删除唯一语义 —— 同租户同标识两条 deleted=0 冲突(23505)，deleted=1 历史可共存")
+    void userGroupCode_uniqueSemantics() throws SQLException {
+        String url = "jdbc:h2:mem:flyway_v34_semantics;DB_CLOSE_DELAY=-1";
+        String[] locations = Arrays.stream(APP_LOCATIONS)
+                .map(location -> location.replace("{vendor}", "h2"))
+                .toArray(String[]::new);
+        Flyway.configure().dataSource(url, USER, PASSWORD).locations(locations).load().migrate();
+
+        try (Connection conn = DriverManager.getConnection(url, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("INSERT INTO sys_user_group (id, create_time, update_time, deleted, tenant_id, version, "
+                    + "group_code, group_name, status, remark) VALUES "
+                    + "(1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, 'G-001', '技术委员会', 0, NULL)");
+            // 同租户同标识第二条 deleted=0 → 唯一冲突
+            expectUniqueViolation(() -> stmt.executeUpdate(
+                    "INSERT INTO sys_user_group (id, create_time, update_time, deleted, tenant_id, version, "
+                            + "group_code, group_name, status, remark) VALUES "
+                            + "(2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, 'G-001', '技术委员会B', 0, NULL)"));
+            // 同租户同标识 deleted=1 历史可共存（稳定引用 + 逻辑删除唯一语义）
+            stmt.executeUpdate("INSERT INTO sys_user_group (id, create_time, update_time, deleted, tenant_id, version, "
+                    + "group_code, group_name, status, remark) VALUES "
+                    + "(3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 0, 0, 'G-001', '技术委员会-已删', 0, NULL)");
+            // 不同租户同标识各自有效
+            stmt.executeUpdate("INSERT INTO sys_user_group (id, create_time, update_time, deleted, tenant_id, version, "
+                    + "group_code, group_name, status, remark) VALUES "
+                    + "(4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 9, 0, 'G-001', '租户9技术委员会', 0, NULL)");
+            // 成员表唯一：同组同用户两条 deleted=0 冲突
+            stmt.executeUpdate("INSERT INTO sys_user_group_member (id, create_time, update_time, deleted, tenant_id, version, "
+                    + "group_id, user_id) VALUES "
+                    + "(1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, 1, 100)");
+            expectUniqueViolation(() -> stmt.executeUpdate(
+                    "INSERT INTO sys_user_group_member (id, create_time, update_time, deleted, tenant_id, version, "
+                            + "group_id, user_id) VALUES "
+                            + "(2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, 1, 100)"));
         }
     }
 
