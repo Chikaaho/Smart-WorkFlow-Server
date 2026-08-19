@@ -25,6 +25,16 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- zonky embedded-postgres-binaries BOM：统一全部受支持平台（linux/darwin/windows，
+                 amd64/arm64 等）的 PostgreSQL 二进制版本为 17.5.0，由 zonky 运行时按 os/arch
+                 自动选择对应平台产物（FlywayFullChainPostgresTest 跨平台可运行）。 -->
+            <dependency>
+                <groupId>io.zonky.test.postgres</groupId>
+                <artifactId>embedded-postgres-binaries-bom</artifactId>
+                <version>17.5.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -167,6 +177,24 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- zonky embedded-postgres：JUnit 内嵌真实 PostgreSQL 二进制，
+             用于 PG 侧全链 Flyway 迁移验证（FlywayFullChainPostgresTest）。
+             平台二进制版本由 dependencyManagement 中的 embedded-postgres-binaries-bom
+             （17.5.0）统一管理：core 默认携带 windows-amd64/darwin-amd64/linux-amd64/
+             linux-amd64-alpine 四个平台产物，darwin-arm64v8 显式补充——任一受支持
+             平台（linux/darwin/windows × amd64/arm64）由 zonky 运行时按 os/arch
+             自动解析对应 17.5.0 产物，不在 pom 中做平台排除。 -->
+        <dependency>
+            <groupId>io.zonky.test</groupId>
+            <artifactId>embedded-postgres</artifactId>
+            <version>2.1.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

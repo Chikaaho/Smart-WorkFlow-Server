@@ -20,6 +20,13 @@
 --   8. sw_form_config(table_name)           → UNIQUE (table_name, deleted)
 --   9. sw_bpm_ext_datasource(name)          → UNIQUE (name, deleted)
 --
+-- PG 侧说明（H2 侧 V13 保持原样，两份互为镜像）：
+--   第 7 项 sw_form_def 的唯一约束由 V7 inline UNIQUE（form_key VARCHAR(100)
+--   NOT NULL UNIQUE）创建，PG 中该约束背书隐式索引 sw_form_def_form_key_key，
+--   直接 DROP INDEX 触发 2BP01（cannot drop index ... because constraint ...
+--   requires it），必须先 ALTER TABLE ... DROP CONSTRAINT 释放；
+--   H2 允许直接 DROP INDEX，故 H2 侧 V13 不采用此写法。
+--
 -- 无需改动的唯一索引：
 --   · sw_bpm_form_binding.uk_sw_bpm_binding_active
 --     — 已有 WHERE active=true，不屏蔽软删重建
@@ -54,8 +61,11 @@ DROP INDEX IF EXISTS uk_sys_dict_type_code;
 CREATE UNIQUE INDEX uk_sys_dict_type_code ON sys_dict_type (code, deleted);
 
 -- ==================== 7. sw_form_def (form_key) ====================
--- inline UNIQUE 在 PG 中创建隐式索引 sw_form_def_form_key_key
-DROP INDEX IF EXISTS sw_form_def_form_key_key;
+-- V7 inline UNIQUE 在 PG 中创建的是约束背书的隐式索引 sw_form_def_form_key_key，
+-- 直接 DROP INDEX 会触发 2BP01（cannot drop index ... because constraint ...
+-- requires it），必须先 DROP CONSTRAINT 释放该隐式索引；
+-- H2 允许直接 DROP INDEX，故 H2 侧 V13 保持 DROP INDEX 不变。
+ALTER TABLE sw_form_def DROP CONSTRAINT IF EXISTS sw_form_def_form_key_key;
 CREATE UNIQUE INDEX uk_sw_form_def_form_key ON sw_form_def (form_key, deleted);
 
 -- ==================== 8. sw_form_config (table_name) ====================
