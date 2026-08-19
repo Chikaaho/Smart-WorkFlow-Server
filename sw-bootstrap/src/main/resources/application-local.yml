@@ -19,7 +19,7 @@ spring:
       datasource:
         master:
           driver-class-name: org.postgresql.Driver
-          url: jdbc:postgresql://localhost:5432/smart_workflow
+          url: jdbc:postgresql://127.0.0.1:5432/smart_workflow
           username: ${PG_USERNAME:}
           password: ${PG_PASSWORD:}
         # 扩展库示例：IoT 独立 H2 内存库
@@ -73,4 +73,3 @@ sw:
     enabled: true
   external-datasource:
     cipher-key: "c21hcnQtd29ya2Zsb3ctZGV2LWNpcGhlci1rZXkhIQ=="
-
