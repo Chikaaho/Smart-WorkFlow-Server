@@ -74,18 +74,19 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(32, result.migrationsExecuted,
-                "全链迁移计数应为 32（含用户岗位 V32），实际: " + result.migrationsExecuted);
+        assertEquals(33, result.migrationsExecuted,
+                "全链迁移计数应为 33（含 V32 用户岗位、V33 大模型菜单 seed），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 32 条，包含 BPM V8/V14/P24 V31/V32")
-    void appliedMigrationCount_shouldBe31() {
+    @DisplayName("全链迁移后：info().applied() 共 33 条，包含 BPM V8/V14/P24 V31/V32/V33")
+    void appliedMigrationCount_shouldBe33() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(32, applied.length, "已应用迁移数应为 32");
+        assertEquals(33, applied.length, "已应用迁移数应为 33");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
+        boolean v33Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -96,10 +97,14 @@ class FlywayFullChainH2Test {
             if ("31".equals(info.getVersion().getVersion())) {
                 v31Seen = true;
             }
+            if ("33".equals(info.getVersion().getVersion())) {
+                v33Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
         assertTrue(v31Seen, "P24 V31 应已应用");
+        assertTrue(v33Seen, "V33 大模型菜单 seed 应已应用");
     }
 
     @Test
@@ -164,6 +169,63 @@ class FlywayFullChainH2Test {
                 .load();
         assertThrows(FlywayException.class, afterV31::migrate,
                 "既有 admin/id=2 冲突不得静默跳过 V31");
+    }
+
+    @Test
+    @DisplayName("V33：V32→V33 升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
+    void upgradeChain_V32_to_V33_shouldPass() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v33;DB_CLOSE_DELAY=-1";
+        String[] locations = Arrays.stream(APP_LOCATIONS)
+                .map(location -> location.replace("{vendor}", "h2"))
+                .toArray(String[]::new);
+        Flyway toV32 = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .target("32")
+                .load();
+        MigrateResult first = toV32.migrate();
+        assertTrue(first.success, "先迁移至 V32 应成功");
+        assertEquals(32, first.migrationsExecuted, "V32 阶段应执行 32 条，实际: " + first.migrationsExecuted);
+
+        Flyway full = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .load();
+        MigrateResult second = full.migrate();
+        assertTrue(second.success, "V32→V33 升级链应成功");
+        assertEquals(1, second.migrationsExecuted, "升级链应只执行 V33 一条，实际: " + second.migrationsExecuted);
+        full.validate();
+
+        try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT permission, component, path, menu_type, parent_id, sort FROM sys_menu WHERE id = 209")) {
+                assertTrue(rs.next(), "V33 菜单 id=209（大模型管理）应存在");
+                assertEquals("agent:model:view", rs.getString("permission"));
+                assertEquals("agent/views/ModelList", rs.getString("component"));
+                assertEquals("model", rs.getString("path"));
+                assertEquals(1, rs.getInt("menu_type"));
+                assertEquals(7, rs.getInt("parent_id"));
+                assertTrue(rs.getInt("sort") > 15, "sort 应在图定义管理(15)之后");
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT permission, menu_type, parent_id FROM sys_menu WHERE id IN (210, 211) ORDER BY id")) {
+                assertTrue(rs.next(), "V33 按钮 id=210 应存在");
+                assertEquals("agent:model:manage", rs.getString("permission"));
+                assertEquals(2, rs.getInt("menu_type"));
+                assertEquals(209, rs.getInt("parent_id"));
+                assertTrue(rs.next(), "V33 按钮 id=211 应存在");
+                assertEquals("agent:model:test", rs.getString("permission"));
+                assertEquals(2, rs.getInt("menu_type"));
+                assertEquals(209, rs.getInt("parent_id"));
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM sys_role_menu rm JOIN sys_menu m ON m.id = rm.menu_id "
+                            + "WHERE m.id IN (209, 210, 211)")) {
+                assertTrue(rs.next());
+                assertEquals(0, rs.getInt(1), "V33 不得自动 seed sys_role_menu（V6/V26 决策沿用）");
+            }
+        }
     }
 
     @Test
