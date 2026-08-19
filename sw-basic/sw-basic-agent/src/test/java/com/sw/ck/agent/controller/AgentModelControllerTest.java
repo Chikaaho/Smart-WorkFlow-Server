@@ -306,6 +306,23 @@ class AgentModelControllerTest {
         assertThat(mapper.selectById(id)).isNull();
     }
 
+    // ==================== 用例 5：未认证 → 401 ====================
+    // 仓库先例：StorageControllerAuthorizationTest / JobInfoControllerAuthorizationTest 的
+    // unauthenticatedRequestMustBeUnauthorized（真实安全链 + anyRequest().authenticated()）。
+    // 本测试类已装配真实 JwtAuthenticationFilter + RestAuthenticationEntryPoint，
+    // 无 token 请求 → 过滤器不注入认证 → entry point 统一吐 401。
+
+    @Test
+    @DisplayName("用例5: 未认证（无 token）请求 GET /agent/models → 401")
+    void page_withoutAuthentication_shouldReturn401() throws Exception {
+        MvcResult result = mockMvc.perform(get("/agent/models"))
+                .andExpect(status().isUnauthorized())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isEqualTo(401);
+        assertThat(body.get("msg").asText()).isNotBlank();
+    }
+
     // ==================== 组合测试配置 ====================
 
     /** 按 userId 提供可控权限的 UserDetailsProvider 测试桩 */

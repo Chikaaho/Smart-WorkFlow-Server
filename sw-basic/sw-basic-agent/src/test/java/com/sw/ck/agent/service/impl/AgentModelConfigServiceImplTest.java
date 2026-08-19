@@ -50,10 +50,12 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -388,6 +390,157 @@ class AgentModelConfigServiceImplTest {
         assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
     }
 
+    // ==================== 用例 13/14/15/16：other 协议与远端 4xx 可达语义 ====================
+    // 方向 §2「不把 4xx 可达语义擅自改判为网络失败」：4xx = 服务端可达（鉴权/路径问题），
+    // 只有 ResourceAccessException（连接拒绝/超时/DNS）才算网络不可达。
+
+    @Test
+    @DisplayName("用例13: testConnection other 协议 → 仅探测 baseUrl 根路径（不拼 /models /api/tags），200 → success=true")
+    void testConnection_other_shouldProbeRootOnly() throws Exception {
+        AtomicReference<String> sawPath = new AtomicReference<>();
+        HttpServer server = startServer(200, new AtomicBoolean(false), sawPath);
+        try {
+            int port = server.getAddress().getPort();
+            Long id = service.create(createReqWithUrl("other-model", "other", null,
+                    "http://127.0.0.1:" + port));
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getMessage()).isNotBlank();
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+            assertThat(sawPath.get())
+                    .as("other 协议应仅探测 baseUrl 根路径，不拼接 /models 或 /api/tags")
+                    .isEqualTo("/");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例14: testConnection other 协议 → 远端 404 → 仍 success=true（只判可达，不校验响应体）")
+    void testConnection_other_with404_shouldStillSucceed() throws Exception {
+        HttpServer server = startServer(404, new AtomicBoolean(false));
+        try {
+            int port = server.getAddress().getPort();
+            Long id = service.create(createReqWithUrl("other-404-model", "other", null,
+                    "http://127.0.0.1:" + port));
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getMessage()).contains("404");
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例15: testConnection openai 协议 → 远端 401（鉴权失败≠网络不可达）→ 仍 success=true 且请求携带 Bearer 头")
+    void testConnection_openai_with401_shouldStillSucceed() throws Exception {
+        AtomicBoolean sawAuthHeader = new AtomicBoolean(false);
+        HttpServer server = startServer(401, sawAuthHeader);
+        try {
+            int port = server.getAddress().getPort();
+            Long id = service.create(createReqWithUrl("openai-401-model", "openai", TEST_API_KEY,
+                    "http://127.0.0.1:" + port));
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getMessage()).contains("401");
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+            assertThat(sawAuthHeader.get())
+                    .as("openai 协议探测应携带 Authorization Bearer 头")
+                    .isTrue();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例16: testConnection ollama 协议 → 远端 404 → 仍 success=true 且不带鉴权头")
+    void testConnection_ollama_with404_shouldStillSucceed() throws Exception {
+        AtomicBoolean sawAuthHeader = new AtomicBoolean(false);
+        HttpServer server = startServer(404, sawAuthHeader);
+        try {
+            int port = server.getAddress().getPort();
+            Long id = service.create(createReqWithUrl("ollama-404-model", "ollama", "ollama-secret",
+                    "http://127.0.0.1:" + port));
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getMessage()).contains("404");
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+            assertThat(sawAuthHeader.get())
+                    .as("ollama 协议探测请求不应携带 Authorization 头")
+                    .isFalse();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ==================== 用例 17/18：禁用/锁定配置连通性不受影响 ====================
+    // testConnection 是纯只读网络探测，不读取 enabled / lockedUntil：
+    // 这两条用例是前端 Mock 语义修正的后端契约依据（前端当前把
+    // disabled→success=false、锁定→429 当 mock 语义，与真实后端不一致）。
+
+    @Test
+    @DisplayName("用例17: testConnection 不读取 enabled → enabled=false 的配置仍可探测，200 → success=true")
+    void testConnection_disabledConfig_shouldStillProbe() throws Exception {
+        HttpServer server = startServer(200, new AtomicBoolean(false));
+        try {
+            int port = server.getAddress().getPort();
+            AgentModelSaveReqDTO req = createReqWithUrl("disabled-model", "openai", TEST_API_KEY,
+                    "http://127.0.0.1:" + port);
+            req.setEnabled(false);
+            Long id = service.create(req);
+            // 原始 SQL 落库确认停用状态真实存在，再验证连通性不受影响
+            Integer enabledInDb = jdbcTemplate.queryForObject(
+                    "SELECT enabled FROM sw_agent_model_config WHERE id = ?", Integer.class, id);
+            assertThat(enabledInDb)
+                    .as("前置条件：配置确已落库为停用状态")
+                    .isZero();
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例18: testConnection 不读取 lockedUntil → 未过期锁定配置仍可探测，200 → success=true")
+    void testConnection_lockedConfig_shouldStillProbe() throws Exception {
+        HttpServer server = startServer(200, new AtomicBoolean(false));
+        try {
+            int port = server.getAddress().getPort();
+            Long id = service.create(createReqWithUrl("locked-model", "openai", TEST_API_KEY,
+                    "http://127.0.0.1:" + port));
+            // lockedUntil 为系统运行态字段（DTO 不可写），直接经 mapper 置为未来时间
+            AgentModelConfig entity = mapper.selectById(id);
+            entity.setLockedUntil(LocalDateTime.now().plusHours(1));
+            mapper.updateById(entity);
+            LocalDateTime lockedInDb = jdbcTemplate.queryForObject(
+                    "SELECT locked_until FROM sw_agent_model_config WHERE id = ?", LocalDateTime.class, id);
+            assertThat(lockedInDb)
+                    .as("前置条件：配置确已处于未过期锁定状态")
+                    .isNotNull()
+                    .isAfter(LocalDateTime.now());
+
+            AgentModelTestConnectionRespDTO resp = service.testConnection(id);
+
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getLatencyMs()).isGreaterThanOrEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     // ==================== 用例 11：目标不存在 ====================
 
     @Test
@@ -402,8 +555,16 @@ class AgentModelConfigServiceImplTest {
     // ==================== 本地假 HTTP 服务 ====================
 
     private static HttpServer startServer(int status, AtomicBoolean sawAuthHeader) throws IOException {
+        return startServer(status, sawAuthHeader, null);
+    }
+
+    private static HttpServer startServer(int status, AtomicBoolean sawAuthHeader, AtomicReference<String> sawPath)
+            throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
+            if (sawPath != null) {
+                sawPath.set(exchange.getRequestURI().getPath());
+            }
             if (exchange.getRequestHeaders().getFirst("Authorization") != null) {
                 sawAuthHeader.set(true);
             }
