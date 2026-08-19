@@ -214,7 +214,11 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
 
     /**
      * 加载非超管用户的菜单权限标识。
-     * 路径：sys_user_role → sys_role_menu → sys_menu（menu_type=2 按钮，permission 非空）
+     * 路径：sys_user_role → sys_role（仅启用）→ sys_role_menu → sys_menu（menu_type=2 按钮，permission 非空）
+     * <p>
+     * 与 {@code SysMenuServiceImpl.loadMenuIdsByUserId} 的菜单过滤保持一致：停用角色
+     * （status=0）不贡献按钮 permission，保证「角色停用 = 有效撤权」的授权语义对称。
+     * </p>
      */
     private List<String> loadPermissions(SysUser user) {
         List<SysUserRole> userRoles = sysUserRoleMapper.selectList(
@@ -229,9 +233,22 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
+        // 仅保留启用角色（status=1）：停用角色不贡献按钮 permission（与 roles 装配同源过滤）
+        List<SysRole> activeRoles = sysRoleMapper.selectList(
+                Wrappers.lambdaQuery(SysRole.class)
+                        .in(SysRole::getId, roleIds)
+                        .eq(SysRole::getStatus, 1));
+        List<Long> activeRoleIds = activeRoles.stream()
+                .map(SysRole::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (activeRoleIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
         List<SysRoleMenu> roleMenus = sysRoleMenuMapper.selectList(
                 Wrappers.lambdaQuery(SysRoleMenu.class)
-                        .in(SysRoleMenu::getRoleId, roleIds));
+                        .in(SysRoleMenu::getRoleId, activeRoleIds));
         if (roleMenus.isEmpty()) {
             return Collections.emptyList();
         }

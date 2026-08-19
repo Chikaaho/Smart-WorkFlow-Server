@@ -3,9 +3,11 @@ package com.sw.ck.system.service.impl;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.sw.ck.system.controller.AuthMenuVO;
 import com.sw.ck.system.entity.SysMenu;
+import com.sw.ck.system.entity.SysRole;
 import com.sw.ck.system.entity.SysRoleMenu;
 import com.sw.ck.system.entity.SysUserRole;
 import com.sw.ck.system.mapper.SysMenuMapper;
+import com.sw.ck.system.mapper.SysRoleMapper;
 import com.sw.ck.system.mapper.SysRoleMenuMapper;
 import com.sw.ck.system.mapper.SysUserRoleMapper;
 import com.sw.ck.system.service.SysMenuService;
@@ -27,13 +29,16 @@ public class SysMenuServiceImpl implements SysMenuService {
 
     private final SysMenuMapper sysMenuMapper;
     private final SysUserRoleMapper sysUserRoleMapper;
+    private final SysRoleMapper sysRoleMapper;
     private final SysRoleMenuMapper sysRoleMenuMapper;
 
     public SysMenuServiceImpl(SysMenuMapper sysMenuMapper,
                               SysUserRoleMapper sysUserRoleMapper,
+                              SysRoleMapper sysRoleMapper,
                               SysRoleMenuMapper sysRoleMenuMapper) {
         this.sysMenuMapper = sysMenuMapper;
         this.sysUserRoleMapper = sysUserRoleMapper;
+        this.sysRoleMapper = sysRoleMapper;
         this.sysRoleMenuMapper = sysRoleMenuMapper;
     }
 
@@ -67,7 +72,11 @@ public class SysMenuServiceImpl implements SysMenuService {
 
     /**
      * 加载非超管用户有权访问的菜单 ID 列表。
-     * 路径：sys_user_role → sys_role_menu → sys_menu.id
+     * 路径：sys_user_role → sys_role（仅启用）→ sys_role_menu → sys_menu.id
+     * <p>
+     * 与 {@code UserDetailsProviderImpl} 的权限装配保持一致：停用角色（status=0）
+     * 不贡献菜单，保证「角色停用 = 有效撤权」的授权语义对称。
+     * </p>
      */
     private List<Long> loadMenuIdsByUserId(Long userId) {
         // 1. 查用户关联的角色
@@ -83,10 +92,23 @@ public class SysMenuServiceImpl implements SysMenuService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        // 2. 查角色关联的菜单
+        // 1.5 仅保留启用角色（status=1）：停用角色不贡献菜单，与权限装配对称
+        List<SysRole> activeRoles = sysRoleMapper.selectList(
+                Wrappers.lambdaQuery(SysRole.class)
+                        .in(SysRole::getId, roleIds)
+                        .eq(SysRole::getStatus, 1));
+        List<Long> activeRoleIds = activeRoles.stream()
+                .map(SysRole::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (activeRoleIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // 2. 查启用角色关联的菜单
         List<SysRoleMenu> roleMenus = sysRoleMenuMapper.selectList(
                 Wrappers.lambdaQuery(SysRoleMenu.class)
-                        .in(SysRoleMenu::getRoleId, roleIds));
+                        .in(SysRoleMenu::getRoleId, activeRoleIds));
         if (roleMenus.isEmpty()) {
             return Collections.emptyList();
         }
