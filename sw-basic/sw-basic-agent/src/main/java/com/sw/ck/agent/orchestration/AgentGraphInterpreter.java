@@ -4,6 +4,8 @@ import com.sw.ck.agent.dto.graph.GraphElement;
 import com.sw.ck.agent.dto.graph.ProcessGraph;
 import com.sw.ck.agent.entity.AgentModelConfig;
 import com.sw.ck.common.crypto.AesGcmCipher;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -15,6 +17,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 图解释执行引擎（M07-F02 Step8 第一版 + Step10 多变量执行上下文，纯 Java 无 Spring
@@ -134,6 +138,17 @@ public class AgentGraphInterpreter {
 
     /** LOOP 节点 config 键：迭代上限（Integer，可选，缺省 {@value #DEFAULT_MAX_ITERATIONS}；<1 由执行前校验拦截） */
     public static final String CONFIG_KEY_MAX_ITERATIONS = "maxIterations";
+
+    /** LLM 节点 config 键：系统 Prompt（String，可选，空白 = 不注入 SystemMessage） */
+    public static final String CONFIG_KEY_SYSTEM_PROMPT = "systemPrompt";
+
+    /** LLM 节点 config 键：用户 Prompt 模板（String，可选，支持 {{variableName}} 占位符，空白 = 退化为 inputVar 原文） */
+    public static final String CONFIG_KEY_USER_PROMPT_TEMPLATE = "userPromptTemplate";
+
+    /** 用户 Prompt 模板占位符正则：{{variableName}}，变量名按 Java 标识符规则（首字
+     * 母/下划线，后续字母数字下划线），一次性纯字符串替换（不做二次展开，避免变量值注入）。 */
+    private static final Pattern PLACEHOLDER_PATTERN =
+            Pattern.compile("\\{\\{([A-Za-z_][A-Za-z0-9_]*)}}");
 
     /**
      * 默认变量名（旧图语义锚点）：graph 入参写入该变量；未指定变量名的节点读写该
@@ -278,7 +293,7 @@ public class AgentGraphInterpreter {
                 }
                 switch (current.getType()) {
                     case NODE_TYPE_LLM -> writeOutput(current, variables,
-                            callLlmNode(current, readInput(current, variables)));
+                            callLlmNode(current, readInput(current, variables), variables));
                     case NODE_TYPE_TOOL -> writeOutput(current, variables,
                             callToolNode(current, readInput(current, variables)));
                     // START/CONDITION 为纯路由点：START 不写变量（入参已在初始变量表），
@@ -353,10 +368,25 @@ public class AgentGraphInterpreter {
 
     /**
      * LLM 节点执行：config.agentModelConfigId → 解密 Key → {@code ChatModelFactory.build}
-     * → 以入参文本（inputVar 变量值，由调用方解析）为 UserMessage 单跳调用（不带工具、
+     * → 按 config.systemPrompt / config.userPromptTemplate 组装消息列表单跳调用（不带工具、
      * 不带历史）→ 返回输出（由调用方写入 outputVar 指定变量）。
+     * <p>
+     * <b>Prompt 契约（M07-F02-02 新增）</b>：
+     * <ul>
+     *   <li>config.systemPrompt（可选）：空白 = 不注入 SystemMessage；非空白整体作为
+     *       SystemMessage（不做变量插值——系统 Prompt 用于角色/规则/背景，与变量无关）</li>
+     *   <li>config.userPromptTemplate（可选）：空白/缺失 = 退化为 inputVar 原文（历史行为）；
+     *       配置后按 {{variableName}} 做一次性纯字符串插值；未定义变量抛 UNDEFINED_VARIABLE；
+     *       变量值按普通文本替换，不再次解析其中的 {{...}}（避免二次展开 / 表达式注入）</li>
+     * </ul>
+     * 历史图（无 systemPrompt/userPromptTemplate）行为 = 仅 UserMessage(inputVar 值)，
+     * 与 Step8/10/11/12 完全一致（零迁移）。
+     *
+     * @param node      当前 LLM 节点
+     * @param text      inputVar 读出的原始值（未配置 userPromptTemplate 时直接作为用户消息）
+     * @param variables 当前变量表（供 userPromptTemplate 插值使用）
      */
-    private String callLlmNode(GraphElement node, String text) {
+    private String callLlmNode(GraphElement node, String text, Map<String, String> variables) {
         Long modelConfigId = requireConfigId(node, CONFIG_KEY_AGENT_MODEL_CONFIG_ID);
         AgentModelConfig modelConfig = modelConfigs.get(modelConfigId);
         if (modelConfig == null) {
@@ -370,7 +400,22 @@ public class AgentGraphInterpreter {
                 plainApiKey = cipher.decrypt(modelConfig.getApiKeyCipher());
             }
             ChatModel chatModel = chatModelFactory.build(modelConfig, plainApiKey);
-            ChatResponse response = chatModel.call(new Prompt(new UserMessage(text)));
+            // === Prompt 契约组装 ===
+            String systemPrompt = configString(node, CONFIG_KEY_SYSTEM_PROMPT);
+            String userPromptTemplate = configString(node, CONFIG_KEY_USER_PROMPT_TEMPLATE);
+            List<Message> messages = new ArrayList<>();
+            if (systemPrompt != null && !systemPrompt.isBlank()) {
+                messages.add(new SystemMessage(systemPrompt));
+            }
+            String userText;
+            if (userPromptTemplate == null || userPromptTemplate.isBlank()) {
+                // 历史行为：直接用 inputVar 值作为用户消息（旧图零迁移关键）
+                userText = text;
+            } else {
+                userText = interpolateTemplate(userPromptTemplate, node, variables);
+            }
+            messages.add(new UserMessage(userText));
+            ChatResponse response = chatModel.call(new Prompt(messages));
             String output = response.getResult().getOutput().getText();
             if (output == null) {
                 throw new GraphExecutionException(ERROR_CATEGORY_MODEL_CALL_FAILED,
@@ -487,6 +532,49 @@ public class AgentGraphInterpreter {
             return DEFAULT_VARIABLE_NAME;
         }
         return s;
+    }
+
+    /**
+     * 读取节点 config 中的 String 型可选键（与 {@link #requireConfigString} 不同：
+     * 缺失/非 String 返回 null 而非抛错，供 systemPrompt / userPromptTemplate 等可选契约使用）。
+     */
+    private String configString(GraphElement node, String key) {
+        Map<String, Object> cfg = node.getConfig();
+        if (cfg == null) {
+            return null;
+        }
+        Object v = cfg.get(key);
+        if (!(v instanceof String s)) {
+            return null;
+        }
+        return s;
+    }
+
+    /**
+     * 对模板中的 {@code {{variableName}}} 占位符做一次性纯字符串插值（M07-F02-02）。
+     * 变量名按 Java 标识符规则（{@code [A-Za-z_][A-Za-z0-9_]*}）匹配；未定义变量抛
+     * {@link GraphExecutionException}（分类 {@link #ERROR_CATEGORY_UNDEFINED_VARIABLE}）；
+     * 变量值按普通文本替换（{@link Matcher#quoteReplacement}），不再次解析其中的
+     * {@code {{...}}}，避免二次展开 / 表达式注入。
+     * <p>
+     * 不匹配占位符模式的文本（如 {@code "{{ invalid name }}"} 含空格 /
+     * {@code "{{123numeric}}"}} 非标识符开头）原样保留，不抛错。
+     */
+    private String interpolateTemplate(String template, GraphElement node,
+                                       Map<String, String> variables) {
+        Matcher m = PLACEHOLDER_PATTERN.matcher(template);
+        StringBuilder sb = new StringBuilder(template.length());
+        while (m.find()) {
+            String varName = m.group(1);
+            String value = variables.get(varName);
+            if (value == null) {
+                throw new GraphExecutionException(ERROR_CATEGORY_UNDEFINED_VARIABLE,
+                        "引用了未定义的变量: " + varName + "（节点 " + node.getId() + "）");
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(value));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     // ==================== 条件分支与选路 ====================

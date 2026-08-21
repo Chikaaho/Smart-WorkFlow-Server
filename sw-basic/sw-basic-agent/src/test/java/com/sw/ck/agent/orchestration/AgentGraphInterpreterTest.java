@@ -7,6 +7,8 @@ import com.sw.ck.common.crypto.AesGcmCipher;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -739,6 +741,373 @@ class AgentGraphInterpreterTest {
                 .hasMessageContaining("执行步数超限")
                 .satisfies(ex -> assertThat(((AgentGraphInterpreter.GraphExecutionException) ex)
                         .getCategory()).isEqualTo("STEP_LIMIT"));
+    }
+
+    // ==================== 用例 25：历史图无 Prompt 配置 → 仅 UserMessage（零迁移） ====================
+
+    @Test
+    @DisplayName("用例25: 历史图无 systemPrompt/userPromptTemplate → 仅 UserMessage(inputVar 值)，结果与旧行为一致")
+    void llmNodeWithoutPromptConfigBackwardCompatible() {
+        AgentModelConfig config = modelConfig(1L, "sk-hist");
+        CapturingChatModel stub = new CapturingChatModel("历史回复");
+        when(chatModelFactory.build(config, "sk-hist")).thenReturn(stub);
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config), 10).run(graph, "历史输入");
+
+        assertThat(output).isEqualTo("历史回复");
+        List<Message> msgs = stub.capturedPrompt.getInstructions();
+        assertThat(msgs).hasSize(1);
+        assertThat(msgs.get(0).getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(msgs.get(0).getText()).isEqualTo("历史输入");
+    }
+
+    // ==================== 用例 26：配置 systemPrompt → 消息列表含 SystemMessage + UserMessage ====================
+
+    @Test
+    @DisplayName("用例26: 配置 systemPrompt → 消息列表含 SystemMessage + UserMessage（顺序：System 在前，User 在后）")
+    void llmNodeWithSystemPromptInjected() {
+        AgentModelConfig config = modelConfig(1L, "sk-sys");
+        CapturingChatModel stub = new CapturingChatModel("系统回复");
+        when(chatModelFactory.build(config, "sk-sys")).thenReturn(stub);
+
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", 1L,
+                        "systemPrompt", "You are a helpful assistant.")),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm", Map.of()),
+                edge("e2", "node_llm", "node_end", Map.of()));
+
+        String output = interpreter(Map.of(1L, config), 10).run(graph, "你好");
+
+        assertThat(output).isEqualTo("系统回复");
+        List<Message> msgs = stub.capturedPrompt.getInstructions();
+        assertThat(msgs).hasSize(2);
+        assertThat(msgs.get(0).getMessageType()).isEqualTo(MessageType.SYSTEM);
+        assertThat(msgs.get(0).getText()).isEqualTo("You are a helpful assistant.");
+        assertThat(msgs.get(1).getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(msgs.get(1).getText()).isEqualTo("你好");
+    }
+
+    // ==================== 用例 27：空 systemPrompt → 不注入 SystemMessage ====================
+
+    @Test
+    @DisplayName("用例27: systemPrompt=\"\" 或 \"   \" → 仅 UserMessage（空白系统 Prompt 不注入）")
+    void llmNodeWithBlankSystemPromptNotInjected() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-b1");
+        AgentModelConfig config2 = modelConfig(2L, "sk-b2");
+        CapturingChatModel stub1 = new CapturingChatModel("空串回复");
+        CapturingChatModel stub2 = new CapturingChatModel("空白回复");
+        when(chatModelFactory.build(config1, "sk-b1")).thenReturn(stub1);
+        when(chatModelFactory.build(config2, "sk-b2")).thenReturn(stub2);
+
+        // 空串
+        ProcessGraph graph1 = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 1L, "systemPrompt", "")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "e", Map.of()));
+        // 纯空白
+        ProcessGraph graph2 = graphOf(
+                node("s", "START", Map.of()),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 2L, "systemPrompt", "   ")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm2", Map.of()),
+                edge("x2", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, config1), 10).run(graph1, "输入1");
+        interpreter(Map.of(2L, config2), 10).run(graph2, "输入2");
+
+        assertThat(stub1.capturedPrompt.getInstructions()).hasSize(1);
+        assertThat(stub1.capturedPrompt.getInstructions().get(0).getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(stub2.capturedPrompt.getInstructions()).hasSize(1);
+        assertThat(stub2.capturedPrompt.getInstructions().get(0).getMessageType()).isEqualTo(MessageType.USER);
+    }
+
+    // ==================== 用例 28：userPromptTemplate 单变量插值 ====================
+
+    @Test
+    @DisplayName("用例28: userPromptTemplate=\"Hello, {{name}}\" + variables={name=alice} → 用户消息=\"Hello, alice\"")
+    void llmNodeWithUserPromptTemplateSingleVar() {
+        AgentModelConfig config = modelConfig(1L, "sk-tpl");
+        CapturingChatModel stub = new CapturingChatModel("模板回复");
+        when(chatModelFactory.build(config, "sk-tpl")).thenReturn(stub);
+
+        // LLM1 写 name 变量；LLM2 用模板引用 {{name}}
+        AgentModelConfig configPre = modelConfig(2L, "sk-pre");
+        when(chatModelFactory.build(configPre, "sk-pre")).thenReturn(new StubChatModel("alice"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "name")),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "Hello, {{name}}")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "llm2", Map.of()),
+                edge("x3", "llm2", "e", Map.of()));
+
+        String output = interpreter(Map.of(1L, config, 2L, configPre), 10).run(graph, "ignored");
+
+        assertThat(output).isEqualTo("模板回复");
+        List<Message> msgs = stub.capturedPrompt.getInstructions();
+        assertThat(msgs).hasSize(1);
+        assertThat(msgs.get(0).getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(msgs.get(0).getText()).isEqualTo("Hello, alice");
+    }
+
+    // ==================== 用例 29：userPromptTemplate 多变量插值 ====================
+
+    @Test
+    @DisplayName("用例29: userPromptTemplate=\"{{greeting}} {{name}}\" + 两个命名变量 → 正确拼接")
+    void llmNodeWithUserPromptTemplateMultipleVars() {
+        AgentModelConfig configTpl = modelConfig(1L, "sk-tpl");
+        AgentModelConfig configG = modelConfig(2L, "sk-g");
+        AgentModelConfig configN = modelConfig(3L, "sk-n");
+        CapturingChatModel stub = new CapturingChatModel("多变量回复");
+        when(chatModelFactory.build(configTpl, "sk-tpl")).thenReturn(stub);
+        when(chatModelFactory.build(configG, "sk-g")).thenReturn(new StubChatModel("Hi"));
+        when(chatModelFactory.build(configN, "sk-n")).thenReturn(new StubChatModel("bob"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm_g", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "greeting")),
+                node("llm_n", "LLM", Map.of("agentModelConfigId", 3L, "outputVar", "name")),
+                node("llm_tpl", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "{{greeting}} {{name}}")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm_g", Map.of()),
+                edge("x2", "llm_g", "llm_n", Map.of()),
+                edge("x3", "llm_n", "llm_tpl", Map.of()),
+                edge("x4", "llm_tpl", "e", Map.of()));
+
+        interpreter(Map.of(1L, configTpl, 2L, configG, 3L, configN), 10).run(graph, "ignored");
+
+        assertThat(stub.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("Hi bob");
+    }
+
+    // ==================== 用例 30：同一变量出现两次 → 均被替换 ====================
+
+    @Test
+    @DisplayName("用例30: userPromptTemplate 同一变量出现两次 → 均被替换为同一值")
+    void llmNodeWithUserPromptTemplateRepeatedVar() {
+        AgentModelConfig configTpl = modelConfig(1L, "sk-tpl");
+        AgentModelConfig configPre = modelConfig(2L, "sk-pre");
+        CapturingChatModel stub = new CapturingChatModel("重复回复");
+        when(chatModelFactory.build(configTpl, "sk-tpl")).thenReturn(stub);
+        when(chatModelFactory.build(configPre, "sk-pre")).thenReturn(new StubChatModel("alice"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "name")),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "Hi {{name}}, again {{name}}!")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "llm2", Map.of()),
+                edge("x3", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, configTpl, 2L, configPre), 10).run(graph, "ignored");
+
+        assertThat(stub.capturedPrompt.getInstructions().get(0).getText())
+                .isEqualTo("Hi alice, again alice!");
+    }
+
+    // ==================== 用例 31：模板与变量含中文 / emoji → 编码正确 ====================
+
+    @Test
+    @DisplayName("用例31: 模板含中文、变量值含中文/emoji → 正确替换不破坏编码")
+    void llmNodeWithUserPromptTemplateNonAscii() {
+        AgentModelConfig configTpl = modelConfig(1L, "sk-tpl");
+        AgentModelConfig configPre = modelConfig(2L, "sk-pre");
+        CapturingChatModel stub = new CapturingChatModel("非ASCII回复");
+        when(chatModelFactory.build(configTpl, "sk-tpl")).thenReturn(stub);
+        when(chatModelFactory.build(configPre, "sk-pre")).thenReturn(new StubChatModel("🌟小明"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "name")),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "你好，{{name}}！欢迎使用系统。")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "llm2", Map.of()),
+                edge("x3", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, configTpl, 2L, configPre), 10).run(graph, "ignored");
+
+        assertThat(stub.capturedPrompt.getInstructions().get(0).getText())
+                .isEqualTo("你好，🌟小明！欢迎使用系统。");
+    }
+
+    // ==================== 用例 32：变量值含 {{x}} 不被二次解析（关键：防表达式注入） ====================
+
+    @Test
+    @DisplayName("用例32: 变量值本身含 '{{x}}' → 不被二次解析（避免表达式注入）")
+    void llmNodeWithTemplateValueContainingBracesNoSecondPass() {
+        AgentModelConfig configTpl = modelConfig(1L, "sk-tpl");
+        AgentModelConfig configPre = modelConfig(2L, "sk-pre");
+        CapturingChatModel stub = new CapturingChatModel("安全回复");
+        when(chatModelFactory.build(configTpl, "sk-tpl")).thenReturn(stub);
+        // 变量值含 {{x}} 样式（模拟用户输入被写入变量）
+        when(chatModelFactory.build(configPre, "sk-pre"))
+                .thenReturn(new StubChatModel("{{injected}}"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "payload")),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "收到: {{payload}}")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "llm2", Map.of()),
+                edge("x3", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, configTpl, 2L, configPre), 10).run(graph, "ignored");
+
+        // 关键：变量值中的 {{injected}} 不被二次展开，原样出现在用户消息中
+        assertThat(stub.capturedPrompt.getInstructions().get(0).getText())
+                .isEqualTo("收到: {{injected}}");
+    }
+
+    // ==================== 用例 33：模板引用未定义变量 → 抛错，不调用模型 ====================
+
+    @Test
+    @DisplayName("用例33: userPromptTemplate 引用未定义变量 → 抛 GraphExecutionException (UNDEFINED_VARIABLE)，不调用模型")
+    void llmNodeWithTemplateUndefinedVariableFails() {
+        AgentModelConfig config = modelConfig(1L, "sk-tpl");
+        // 用 mock ChatModel 验证 call() 从未被调用（模板插值在 call 之前抛错）
+        ChatModel mockChatModel = mock(ChatModel.class);
+        when(chatModelFactory.build(config, "sk-tpl")).thenReturn(mockChatModel);
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "Hello, {{missing}}!")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm", Map.of()),
+                edge("x2", "llm", "e", Map.of()));
+
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 10).run(graph, "ignored"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("引用了未定义的变量: missing")
+                .satisfies(ex -> assertThat(((AgentGraphInterpreter.GraphExecutionException) ex)
+                        .getCategory()).isEqualTo("UNDEFINED_VARIABLE"));
+        // 模板插值在 chatModel.call() 之前抛错 —— 模型从未被调用
+        verify(mockChatModel, never()).call(any(Prompt.class));
+    }
+
+    // ==================== 用例 34：空 userPromptTemplate → 退化为 inputVar 原文 ====================
+
+    @Test
+    @DisplayName("用例34: userPromptTemplate=\"\" 或 null → 退化为 inputVar 原文（历史行为）")
+    void llmNodeWithBlankUserPromptTemplateFallsBackToInputVar() {
+        AgentModelConfig config1 = modelConfig(1L, "sk-b1");
+        AgentModelConfig config2 = modelConfig(2L, "sk-b2");
+        CapturingChatModel stub1 = new CapturingChatModel("空模板回复");
+        CapturingChatModel stub2 = new CapturingChatModel("缺键回复");
+        when(chatModelFactory.build(config1, "sk-b1")).thenReturn(stub1);
+        when(chatModelFactory.build(config2, "sk-b2")).thenReturn(stub2);
+
+        // 空串 userPromptTemplate
+        ProcessGraph graph1 = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 1L, "userPromptTemplate", "")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "e", Map.of()));
+        // 完全缺 userPromptTemplate（历史图形态）
+        ProcessGraph graph2 = graphOf(
+                node("s", "START", Map.of()),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 2L)),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm2", Map.of()),
+                edge("x2", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, config1), 10).run(graph1, "原始输入1");
+        interpreter(Map.of(2L, config2), 10).run(graph2, "原始输入2");
+
+        // 两者都退化为 inputVar 原文
+        assertThat(stub1.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("原始输入1");
+        assertThat(stub2.capturedPrompt.getInstructions().get(0).getText()).isEqualTo("原始输入2");
+    }
+
+    // ==================== 用例 35：systemPrompt + userPromptTemplate 组合 ====================
+
+    @Test
+    @DisplayName("用例35: 同时配置 systemPrompt + userPromptTemplate → 消息列表：System 在前、User 在后")
+    void llmNodeWithTemplateAndSystemPromptCombined() {
+        AgentModelConfig configTpl = modelConfig(1L, "sk-tpl");
+        AgentModelConfig configPre = modelConfig(2L, "sk-pre");
+        CapturingChatModel stub = new CapturingChatModel("组合回复");
+        when(chatModelFactory.build(configTpl, "sk-tpl")).thenReturn(stub);
+        when(chatModelFactory.build(configPre, "sk-pre")).thenReturn(new StubChatModel("alice"));
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm1", "LLM", Map.of("agentModelConfigId", 2L, "outputVar", "name")),
+                node("llm2", "LLM", Map.of("agentModelConfigId", 1L,
+                        "systemPrompt", "你是一个客服机器人。",
+                        "userPromptTemplate", "用户名字: {{name}}")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm1", Map.of()),
+                edge("x2", "llm1", "llm2", Map.of()),
+                edge("x3", "llm2", "e", Map.of()));
+
+        interpreter(Map.of(1L, configTpl, 2L, configPre), 10).run(graph, "ignored");
+
+        List<Message> msgs = stub.capturedPrompt.getInstructions();
+        assertThat(msgs).hasSize(2);
+        assertThat(msgs.get(0).getMessageType()).isEqualTo(MessageType.SYSTEM);
+        assertThat(msgs.get(0).getText()).isEqualTo("你是一个客服机器人。");
+        assertThat(msgs.get(1).getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(msgs.get(1).getText()).isEqualTo("用户名字: alice");
+    }
+
+    // ==================== 用例 36：模板含非标识符语法 → 原文保留不报错 ====================
+
+    @Test
+    @DisplayName("用例36: 模板含 '{{ invalid name }}'（空格）或 '{{123numeric}}'（非标识符开头）→ 不被识别为占位符，原文保留")
+    void llmNodeWithTemplateContainingUnknownSyntaxLeftIntact() {
+        AgentModelConfig config = modelConfig(1L, "sk-tpl");
+        CapturingChatModel stub = new CapturingChatModel("语法保留回复");
+        when(chatModelFactory.build(config, "sk-tpl")).thenReturn(stub);
+
+        ProcessGraph graph = graphOf(
+                node("s", "START", Map.of()),
+                node("llm", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "{{ invalid name }} and {{123numeric}} and {{valid}}")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm", Map.of()),
+                edge("x2", "llm", "e", Map.of()));
+
+        // 变量表只有默认变量 input，无 valid 变量 —— 会触发 UNDEFINED_VARIABLE
+        // 所以先测不含 valid 的版本
+        ProcessGraph graphSafe = graphOf(
+                node("s", "START", Map.of()),
+                node("llm", "LLM", Map.of("agentModelConfigId", 1L,
+                        "userPromptTemplate", "{{ invalid name }} and {{123numeric}} left as-is.")),
+                node("e", "END", Map.of()),
+                edge("x1", "s", "llm", Map.of()),
+                edge("x2", "llm", "e", Map.of()));
+
+        interpreter(Map.of(1L, config), 10).run(graphSafe, "ignored");
+
+        // 非标识符语法的占位符不被识别，原文保留
+        assertThat(stub.capturedPrompt.getInstructions().get(0).getText())
+                .isEqualTo("{{ invalid name }} and {{123numeric}} left as-is.");
+        // 确认 graph（含 {{valid}}）会触发 UNDEFINED_VARIABLE
+        assertThatThrownBy(() -> interpreter(Map.of(1L, config), 10).run(graph, "ignored"))
+                .isInstanceOf(AgentGraphInterpreter.GraphExecutionException.class)
+                .hasMessageContaining("引用了未定义的变量: valid");
     }
 
     // ==================== 内部辅助 ====================
