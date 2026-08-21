@@ -1,51 +1,7 @@
-# Backend Codex instructions
+# Smart-WorkFlow Backend · Codex 入口
 
-## Highest-priority role gate
+本文件仅是 Codex Harness 入口，不定义独立治理规则。
 
-This gate takes precedence over every other instruction in this file.  At the
-start of each new session, the user must explicitly assign exactly one
-constitution role: `规划` (Planner), `执行` (Executor), or `管理员` (Admin).
-Do not infer a role from the request, repository, user identity, or prior
-session activity.  Any other role name is invalid.
-
-Until a valid role is explicitly assigned, refuse the request without taking
-any repository action.  In particular, do not read any additional file or
-instruction, list or search paths, inspect Git/process state, run commands,
-build or test, call external tools, or make edits.  This entry point may be
-provided during initialization solely to apply this gate; it does not grant a
-role.  The same refusal rule applies when the user supplies an unknown role.
-
-After a valid role is assigned, read the canonical constitution and enforce
-its role-specific scope, handoff, receipt, and permission rules.  A role is
-valid only for the current task/session and must not be carried into a new
-session.
-
-Read `docs/governance/engineering-constitution.md` in full before changing backend code, running backend
-commands, or making an implementation decision.  It is the canonical backend
-engineering constitution; this file is only its Codex-compatible entry point.
-Also read `../system.md` when the task uses the shared
-role, receipt, knowledge, or workflow rules.
-
-This directory is **backend executor scope**.  Work only on this repository;
-do not read, edit, build, test, or analyse `../Smart-WorkFlow-Web/`, and do not
-run frontend commands.  Do not create or alter product direction: execute an
-already-issued direction and report any infeasibility through the prescribed
-receipt path.
-
-For Maven compilation or tests, use `MAVEN_OPTS="-Xmx2g"`.  Before any
-compile/test/build operation, check that no frontend compile/test/build process
-is running; wait rather than run the two stacks concurrently.  Use the
-constitution's module boundaries, schema/security constraints, verification
-gate, and structured receipts without exception.
-
-Claude-only settings under `.claude/settings*.json` do not replace Codex's
-approval and sandbox policies.
-
-## Git commit language
-
-Codex must write Git commit subjects and bodies in Chinese by default.  Keep
-necessary technical identifiers such as module names, class names, commands,
-issue IDs, and conventional prefixes (`feat:`, `fix:`, `docs:`) unchanged when
-useful, but the descriptive commit message itself must not be purely English.
-Do not rewrite published history solely to enforce this rule unless the user
-explicitly authorizes the history rewrite and required force-push.
+1. 在执行任何其他仓库操作前，完整读取并遵守工作区唯一行为宪法 `../system.md`，优先执行其中的会话角色门禁与子仓入口边界。
+2. 仅当 `../system.md` 允许当前任务进入后端工程范围时，再完整读取并遵守 `docs/governance/engineering-constitution.md`。
+3. 所有角色、职责、权限、Git、工作流和停止条件均以 `../system.md` 为准；后端工程细节仅以上述工程宪法为准。
