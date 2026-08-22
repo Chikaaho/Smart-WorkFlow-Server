@@ -41,6 +41,12 @@ public class AgentGraphExecutionDetailDTO {
     /** 整次执行耗时（毫秒） */
     private Long latencyMs;
 
+    /** 本次图执行全部 LLM 节点输入 Token 汇总（未知时为 null） */
+    private Long inputTokens;
+
+    /** 本次图执行全部 LLM 节点输出 Token 汇总（未知时为 null） */
+    private Long outputTokens;
+
     /** 创建时间（执行发起时间） */
     private LocalDateTime createTime;
 

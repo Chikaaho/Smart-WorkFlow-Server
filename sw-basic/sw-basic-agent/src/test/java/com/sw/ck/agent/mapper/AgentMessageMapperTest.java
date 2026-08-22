@@ -70,7 +70,7 @@ class AgentMessageMapperTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // ==================== 建表（V22 H2 脚本 DDL） ====================
+    // ==================== 建表（V22 H2 脚本 DDL + V35 token 字段） ====================
 
     @BeforeAll
     static void createTables(@Autowired JdbcTemplate jt) {
@@ -81,6 +81,8 @@ class AgentMessageMapperTest {
                     role        VARCHAR(20) NOT NULL,
                     content     CLOB NOT NULL,
                     msg_order   INT NOT NULL,
+                    input_tokens BIGINT,
+                    output_tokens BIGINT,
                     create_time TIMESTAMP NOT NULL,
                     create_by   VARCHAR(64),
                     update_time TIMESTAMP,

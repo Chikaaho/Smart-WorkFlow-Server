@@ -206,11 +206,16 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
                                 // M07-Step5：记录实际服务本次请求的配置 id（轮询切换后可能
                                 // 与请求携带的 agentModelConfigId 不同，便于排查/审计）
                                 resp.setUsedModelConfigId(currentConfig.getId());
+                                // M07-F04-02: 提取 usage 数据（从 ThreadLocal 读取）
+                                AgentGraphFactory.UsageSnapshot usageSnapshot = AgentGraphFactory.getTokenUsage();
+                                Long inputTokens = usageSnapshot != null ? usageSnapshot.inputTokens() : null;
+                                Long outputTokens = usageSnapshot != null ? usageSnapshot.outputTokens() : null;
                                 // M07 Step4 F04：持久化本轮 USER + ASSISTANT 消息（msg_order =
                                 // 已有消息数，0-based 单调递增）与工具调用日志，并回传会话 id
                                 int nextOrder = dbMessages.size();
                                 insertMessage(sessionId, ROLE_USER, req.getInput(), nextOrder);
-                                insertMessage(sessionId, ROLE_ASSISTANT, outputText, nextOrder + 1);
+                                insertMessage(sessionId, ROLE_ASSISTANT, outputText, nextOrder + 1,
+                                        inputTokens, outputTokens);
                                 persistToolCallLogs(sessionId);
                                 resp.setSessionId(sessionId);
                             }
@@ -221,6 +226,7 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
                         AgentGraphFactory.clearTools();
                         AgentGraphFactory.clearHistoryMessages();
                         AgentGraphFactory.clearToolCallRecords();
+                        AgentGraphFactory.clearTokenUsage();
                     }
                     // 成功路径（含 invoke 空结果兜底分支）均跳出重试循环，不再尝试其他候选
                     break;
@@ -292,11 +298,19 @@ public class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
 
     /** 写入一条会话消息（msg_order 由调用方计算，0-based 单调递增） */
     private void insertMessage(Long sessionId, String role, String content, int msgOrder) {
+        insertMessage(sessionId, role, content, msgOrder, null, null);
+    }
+
+    /** 写入一条会话消息（含 token usage，M07-F04-02） */
+    private void insertMessage(Long sessionId, String role, String content, int msgOrder,
+                               Long inputTokens, Long outputTokens) {
         AgentMessage msg = new AgentMessage();
         msg.setSessionId(sessionId);
         msg.setRole(role);
         msg.setContent(content);
         msg.setMsgOrder(msgOrder);
+        msg.setInputTokens(inputTokens);
+        msg.setOutputTokens(outputTokens);
         messageMapper.insert(msg);
     }
 

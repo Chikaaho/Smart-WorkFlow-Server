@@ -33,4 +33,10 @@ public class AgentMessage extends BaseEntity {
 
     /** 会话内顺序号（0-based，单调递增） */
     private Integer msgOrder;
+
+    /** 供应商返回的输入 Token 数（未知时为 NULL，不为 0） */
+    private Long inputTokens;
+
+    /** 供应商返回的输出 Token 数（未知时为 NULL，不为 0） */
+    private Long outputTokens;
 }

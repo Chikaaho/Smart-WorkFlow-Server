@@ -273,6 +273,13 @@ public class AgentGraphExecutionServiceImpl
         if (traces == null || traces.isEmpty()) {
             return;
         }
+        // M07-F04-02: 汇总 token 数据（每侧独立：无数据侧保持 null，不得写成 0——
+        // 部分 usage 场景"输出未知"必须与"输出 0"区分，贯穿 DB→DTO）
+        long totalInputTokens = 0;
+        long totalOutputTokens = 0;
+        boolean hasInputData = false;
+        boolean hasOutputData = false;
+
         for (AgentGraphInterpreter.NodeExecutionTrace trace : traces) {
             AgentGraphExecutionNode node = new AgentGraphExecutionNode();
             node.setExecutionId(executionId);
@@ -282,7 +289,32 @@ public class AgentGraphExecutionServiceImpl
             node.setNodeType(trace.getNodeType());
             node.setNodeLatencyMs(trace.getNodeLatencyMs());
             node.setVariableSnapshot(toJson(trace.getVariableSnapshot()));
+            // M07-F04-02: 设置 token 字段
+            node.setInputTokens(trace.getInputTokens());
+            node.setOutputTokens(trace.getOutputTokens());
+            // 汇总 token（只累加有数据的节点；每侧独立标记）
+            if (trace.getInputTokens() != null) {
+                totalInputTokens += trace.getInputTokens();
+                hasInputData = true;
+            }
+            if (trace.getOutputTokens() != null) {
+                totalOutputTokens += trace.getOutputTokens();
+                hasOutputData = true;
+            }
             executionNodeMapper.insert(node);
+        }
+
+        // M07-F04-02: 更新执行记录的 token 汇总（每侧独立：有数据才写，无数据保持 null）
+        if (hasInputData || hasOutputData) {
+            AgentGraphExecution execUpdate = new AgentGraphExecution();
+            execUpdate.setId(executionId);
+            if (hasInputData) {
+                execUpdate.setInputTokens(totalInputTokens);
+            }
+            if (hasOutputData) {
+                execUpdate.setOutputTokens(totalOutputTokens);
+            }
+            executionMapper.updateById(execUpdate);
         }
     }
 
@@ -325,6 +357,9 @@ public class AgentGraphExecutionServiceImpl
         dto.setErrorCategory(exec.getErrorCategory());
         dto.setErrorMessage(exec.getErrorMessage());
         dto.setLatencyMs(exec.getLatencyMs());
+        // M07-F04-02: 添加 token 字段
+        dto.setInputTokens(exec.getInputTokens());
+        dto.setOutputTokens(exec.getOutputTokens());
         dto.setCreateTime(exec.getCreateTime());
         return dto;
     }
@@ -340,6 +375,9 @@ public class AgentGraphExecutionServiceImpl
         dto.setErrorCategory(exec.getErrorCategory());
         dto.setErrorMessage(exec.getErrorMessage());
         dto.setLatencyMs(exec.getLatencyMs());
+        // M07-F04-02: 添加 token 字段
+        dto.setInputTokens(exec.getInputTokens());
+        dto.setOutputTokens(exec.getOutputTokens());
         dto.setCreateTime(exec.getCreateTime());
         dto.setUpdateTime(exec.getUpdateTime());
         return dto;
@@ -353,6 +391,9 @@ public class AgentGraphExecutionServiceImpl
         dto.setNodeType(node.getNodeType());
         dto.setNodeLatencyMs(node.getNodeLatencyMs());
         dto.setVariableSnapshot(node.getVariableSnapshot());
+        // M07-F04-02: 添加 token 字段
+        dto.setInputTokens(node.getInputTokens());
+        dto.setOutputTokens(node.getOutputTokens());
         return dto;
     }
 

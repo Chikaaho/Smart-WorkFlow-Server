@@ -43,6 +43,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.time.LocalDateTime;
@@ -202,6 +204,45 @@ class AgentConversationControllerTest {
         mockMvc.perform(get("/agent/conversations/1/messages")
                         .header("Authorization", bearerToken(3L)))
                 .andExpect(status().isOk());
+    }
+
+    // ==================== 用例 5-7：消息端点权限 + 未认证/撤权（M07-F04-02 D164 补证） ====================
+
+    @Test
+    @DisplayName("用例5: 无 agent:model:view 权限访问 GET /agent/conversations/{id}/messages → 403")
+    void messages_withoutViewPermission_shouldReturn403() throws Exception {
+        MvcResult result = mockMvc.perform(get("/agent/conversations/9/messages")
+                        .header("Authorization", bearerToken(1L)))
+                .andExpect(status().isForbidden())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("用例6: 无 token 访问会话端点 → 401（两个端点均未认证拒绝）")
+    void listAndMessages_withoutToken_shouldReturn401() throws Exception {
+        mockMvc.perform(get("/agent/conversations"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/agent/conversations/9/messages"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("用例7: 消息端点携带 token 但会话不存在/跨租户 → 404（Service 层语义透传）")
+    void messages_notFoundSession_shouldReturn404() throws Exception {
+        // doThrow 不覆盖既有 thenReturn stub（与 superAdmin 测试共享 mock）
+        org.mockito.Mockito.doThrow(new com.sw.ck.common.exception.BaseException(
+                        com.sw.ck.common.exception.CommonErrorCode.NOT_FOUND, "会话不存在"))
+                .when(agentConversationService).listMessages(999L);
+
+        MvcResult result = mockMvc.perform(get("/agent/conversations/999/messages")
+                        .header("Authorization", bearerToken(2L)))
+                .andExpect(status().isOk())  // 全局惯例：业务异常 HTTP 200 + body.code
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("code").asInt()).isEqualTo(404);
+        assertThat(body.get("msg").asText()).contains("会话不存在");
     }
 
     // ==================== 组合测试配置 ====================
@@ -388,6 +429,23 @@ class AgentConversationControllerTest {
             return MockMvcBuilders.webAppContextSetup(context)
                     .addFilters(springSecurityFilterChain)
                     .build();
+        }
+
+        // ==================== 业务异常处理器（对齐真实全局惯例） ====================
+
+        @RestControllerAdvice
+        static class TestBusinessExceptionAdvice {
+
+            @ExceptionHandler(com.sw.ck.common.exception.BaseException.class)
+            public com.sw.ck.common.response.R<Void> handleBaseException(
+                    com.sw.ck.common.exception.BaseException ex) {
+                return com.sw.ck.common.response.R.fail(ex.getCode(), ex.getMessage());
+            }
+        }
+
+        @Bean
+        public TestBusinessExceptionAdvice testBusinessExceptionAdvice() {
+            return new TestBusinessExceptionAdvice();
         }
     }
 }

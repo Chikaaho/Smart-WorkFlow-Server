@@ -81,6 +81,14 @@ public class AgentGraphFactory {
      */
     static final ThreadLocal<List<ToolCallRecord>> TOOL_CALL_RECORDS_BINDING = new ThreadLocal<>();
 
+    /**
+     * 当前执行线程绑定的 Token 使用量（M07-F04-02）。callModel 节点从
+     * {@link ChatResponse} 提取 usage 后写入此 ThreadLocal；编排 ServiceImpl
+     * 在 invoke 后读取并持久化。不进入 graph state（SparseStateSerializer 不序列化），
+     * 与 tools/historyMessages ThreadLocal 同一模式。
+     */
+    private static final ThreadLocal<UsageSnapshot> TOKEN_USAGE_BINDING = new ThreadLocal<>();
+
     /** 绑定本次执行的 ChatModel（invoke 前调用） */
     public static void bindChatModel(ChatModel chatModel) {
         CHAT_MODEL_BINDING.set(chatModel);
@@ -124,6 +132,24 @@ public class AgentGraphFactory {
     /** 读取本次执行捕获的工具调用记录（ServiceImpl 在 invoke 后调用；未绑定返回 null） */
     public static List<ToolCallRecord> getToolCallRecords() {
         return TOOL_CALL_RECORDS_BINDING.get();
+    }
+
+    /** Token 使用量快照（M07-F04-02），callModel 从 ChatResponse 提取后写入 ThreadLocal */
+    public record UsageSnapshot(Long inputTokens, Long outputTokens) {}
+
+    /** 存储 Token 使用量（callModel 节点调用） */
+    static void storeTokenUsage(Long inputTokens, Long outputTokens) {
+        TOKEN_USAGE_BINDING.set(new UsageSnapshot(inputTokens, outputTokens));
+    }
+
+    /** 清除 Token 使用量（invoke 结束后 finally 调用） */
+    public static void clearTokenUsage() {
+        TOKEN_USAGE_BINDING.remove();
+    }
+
+    /** 读取本次执行的 Token 使用量（ServiceImpl 在 invoke 后调用；未绑定返回 null） */
+    public static UsageSnapshot getTokenUsage() {
+        return TOKEN_USAGE_BINDING.get();
     }
 
     /**
@@ -186,6 +212,12 @@ public class AgentGraphFactory {
         }
         ChatResponse response = chatModel.call(prompt);
         String output = response.getResult().getOutput().getText();
+        // M07-F04-02: 提取供应商返回的 usage 数据，通过 ThreadLocal 传递（不进 graph state）
+        // 供应商缺失/部分缺失 usage 时保持 null 语义（不写零、不估算）——经
+        // TokenUsageResolver 读取原生字段，避免 DefaultUsage 的 null→0 归一
+        Long[] tokens = TokenUsageResolver.resolve(
+                response.getMetadata() != null ? response.getMetadata().getUsage() : null);
+        storeTokenUsage(tokens[0], tokens[1]);
         return Map.of("output", output);
     }
 

@@ -421,6 +421,14 @@ public class AgentGraphInterpreter {
                 throw new GraphExecutionException(ERROR_CATEGORY_MODEL_CALL_FAILED,
                         "LLM 节点未返回文本: " + node.getId());
             }
+            // M07-F04-02: 提取 usage 数据并设置到当前 trace
+            // 供应商缺失/部分缺失 usage 保持 null（不写零、不估算）；经 TokenUsageResolver
+            // 读取原生字段，避免 DefaultUsage/EmptyUsage 的 null→0 伪零（与 F01 同款语义）
+            Long[] tokens = TokenUsageResolver.resolve(
+                    response.getMetadata() != null ? response.getMetadata().getUsage() : null);
+            NodeExecutionTrace currentTrace = traces.get(traces.size() - 1);
+            currentTrace.inputTokens = tokens[0];
+            currentTrace.outputTokens = tokens[1];
             return output;
         } catch (GraphExecutionException e) {
             // 自有异常（未返回文本等）已带分类，原样上抛
@@ -802,6 +810,12 @@ public class AgentGraphInterpreter {
 
         private Map<String, String> variableSnapshot;
 
+        /** 该节点 LLM 调用的输入 Token（非 LLM 节点或供应商未返回时为 null） */
+        private Long inputTokens;
+
+        /** 该节点 LLM 调用的输出 Token（非 LLM 节点或供应商未返回时为 null） */
+        private Long outputTokens;
+
         public NodeExecutionTrace(long nodeSeq, String branchId, String nodeId, String nodeType) {
             this.nodeSeq = nodeSeq;
             this.branchId = branchId;
@@ -829,8 +843,32 @@ public class AgentGraphInterpreter {
             return nodeLatencyMs;
         }
 
+        public void setNodeLatencyMs(long nodeLatencyMs) {
+            this.nodeLatencyMs = nodeLatencyMs;
+        }
+
         public Map<String, String> getVariableSnapshot() {
             return variableSnapshot;
+        }
+
+        public void setVariableSnapshot(Map<String, String> variableSnapshot) {
+            this.variableSnapshot = variableSnapshot;
+        }
+
+        public Long getInputTokens() {
+            return inputTokens;
+        }
+
+        public void setInputTokens(Long inputTokens) {
+            this.inputTokens = inputTokens;
+        }
+
+        public Long getOutputTokens() {
+            return outputTokens;
+        }
+
+        public void setOutputTokens(Long outputTokens) {
+            this.outputTokens = outputTokens;
         }
     }
 

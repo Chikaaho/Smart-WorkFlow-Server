@@ -82,6 +82,9 @@ public class AgentConversationServiceImpl implements AgentConversationService {
         dto.setRole(message.getRole());
         dto.setContent(message.getContent());
         dto.setMsgOrder(message.getMsgOrder());
+        // M07-F04-02: 添加 token 字段
+        dto.setInputTokens(message.getInputTokens());
+        dto.setOutputTokens(message.getOutputTokens());
         dto.setCreateTime(message.getCreateTime());
         return dto;
     }

@@ -228,18 +228,20 @@ class AgentToolConfigServiceImplTest {
                 """);
         jt.execute("""
                 CREATE TABLE IF NOT EXISTS sw_agent_message (
-                    id          BIGINT NOT NULL PRIMARY KEY,
-                    session_id  BIGINT NOT NULL,
-                    role        VARCHAR(20) NOT NULL,
-                    content     CLOB NOT NULL,
-                    msg_order   INT NOT NULL,
-                    create_time TIMESTAMP NOT NULL,
-                    create_by   VARCHAR(64),
-                    update_time TIMESTAMP,
-                    update_by   VARCHAR(64),
-                    deleted     SMALLINT NOT NULL DEFAULT 0,
-                    tenant_id   BIGINT NOT NULL DEFAULT 0,
-                    version     BIGINT NOT NULL DEFAULT 0
+                    id            BIGINT NOT NULL PRIMARY KEY,
+                    session_id    BIGINT NOT NULL,
+                    role          VARCHAR(20) NOT NULL,
+                    content       CLOB NOT NULL,
+                    msg_order     INT NOT NULL,
+                    input_tokens  BIGINT,
+                    output_tokens BIGINT,
+                    create_time   TIMESTAMP NOT NULL,
+                    create_by     VARCHAR(64),
+                    update_time   TIMESTAMP,
+                    update_by     VARCHAR(64),
+                    deleted       SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id     BIGINT NOT NULL DEFAULT 0,
+                    version       BIGINT NOT NULL DEFAULT 0
                 )
                 """);
         jt.execute("""

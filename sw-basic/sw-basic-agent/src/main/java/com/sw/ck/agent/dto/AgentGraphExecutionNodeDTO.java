@@ -29,4 +29,10 @@ public class AgentGraphExecutionNodeDTO {
 
     /** 该节点执行后的变量表快照（JSON） */
     private String variableSnapshot;
+
+    /** 该节点 LLM 调用的输入 Token（非 LLM 节点或供应商未返回时为 null） */
+    private Long inputTokens;
+
+    /** 该节点 LLM 调用的输出 Token（非 LLM 节点或供应商未返回时为 null） */
+    private Long outputTokens;
 }

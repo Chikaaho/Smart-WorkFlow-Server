@@ -198,18 +198,20 @@ class AgentOrchestrationServiceImplTest {
                 """);
         jt.execute("""
                 CREATE TABLE IF NOT EXISTS sw_agent_message (
-                    id          BIGINT NOT NULL PRIMARY KEY,
-                    session_id  BIGINT NOT NULL,
-                    role        VARCHAR(20) NOT NULL,
-                    content     CLOB NOT NULL,
-                    msg_order   INT NOT NULL,
-                    create_time TIMESTAMP NOT NULL,
-                    create_by   VARCHAR(64),
-                    update_time TIMESTAMP,
-                    update_by   VARCHAR(64),
-                    deleted     SMALLINT NOT NULL DEFAULT 0,
-                    tenant_id   BIGINT NOT NULL DEFAULT 0,
-                    version     BIGINT NOT NULL DEFAULT 0
+                    id            BIGINT NOT NULL PRIMARY KEY,
+                    session_id    BIGINT NOT NULL,
+                    role          VARCHAR(20) NOT NULL,
+                    content       CLOB NOT NULL,
+                    msg_order     INT NOT NULL,
+                    input_tokens  BIGINT,
+                    output_tokens BIGINT,
+                    create_time   TIMESTAMP NOT NULL,
+                    create_by     VARCHAR(64),
+                    update_time   TIMESTAMP,
+                    update_by     VARCHAR(64),
+                    deleted       SMALLINT NOT NULL DEFAULT 0,
+                    tenant_id     BIGINT NOT NULL DEFAULT 0,
+                    version       BIGINT NOT NULL DEFAULT 0
                 )
                 """);
         jt.execute("""
@@ -719,6 +721,81 @@ class AgentOrchestrationServiceImplTest {
 
     private boolean invokeQuotaCheck(Method m, Throwable t) throws Exception {
         return (boolean) m.invoke(service, t);
+    }
+
+    // ==================== 用例15-16：候选切换/失败链的 token 语义（M07-F04-02 D164 补证） ====================
+
+    @Test
+    @DisplayName("用例15: 标准5 — 候选切换后成功轮次只落当前生产调用链的 usage：429 失败轮不落 token，切换成功轮落 3/5")
+    void run_switchSuccess_shouldPersistOnlyCurrentCallChainUsage() throws Exception {
+        AtomicInteger hits429 = new AtomicInteger();
+        HttpServer server429 = start429Server(hits429);
+        HttpServer server200 = startChatServer();
+        try {
+            Long idA = insertGroupConfig("openai", "http://127.0.0.1:" + server429.getAddress().getPort(),
+                    TEST_API_KEY, "g-token-switch", 0);
+            Long idB = insertGroupConfig("openai", "http://127.0.0.1:" + server200.getAddress().getPort(),
+                    TEST_API_KEY, "g-token-switch", 1);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(idA, "你好"));
+            assertThat(resp.isSuccess()).isTrue();
+            assertThat(resp.getUsedModelConfigId()).isEqualTo(idB);
+
+            // 成功轮次（候选 B）的 ASSISTANT 消息落库 usage（3/5）——失败轮（429）不产生消息/token
+            List<AgentMessage> messages = messageMapper.selectList(
+                    Wrappers.<AgentMessage>lambdaQuery()
+                            .eq(AgentMessage::getSessionId, resp.getSessionId())
+                            .eq(AgentMessage::getRole, "ASSISTANT"));
+            assertThat(messages).hasSize(1);
+            assertThat(messages.get(0).getInputTokens()).isEqualTo(3L);
+            assertThat(messages.get(0).getOutputTokens()).isEqualTo(5L);
+        } finally {
+            server429.stop(0);
+            server200.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("用例16: 标准5 — 有 usage 后调用失败（500）→ 不把已取得的 usage 当成功事实写入，无 ASSISTANT 消息 token")
+    void run_failureAfterUsage_shouldNotRecordTokenFacts() throws Exception {
+        AtomicInteger hits500 = new AtomicInteger();
+        HttpServer server500 = start500Server(hits500);
+        try {
+            Long id = insertGroupConfig("openai", "http://127.0.0.1:" + server500.getAddress().getPort(),
+                    TEST_API_KEY, null, 0);
+
+            AgentOrchestrationRunRespDTO resp = service.run(req(id, "触发失败"));
+            assertThat(resp.isSuccess()).isFalse();
+            assertThat(resp.getErrorMessage()).isNotBlank();
+            assertThat(hits500.get()).isEqualTo(1);
+
+            // 失败请求：会话可能不存在或无 ASSISTANT 消息；即使存在也不得写入 token 事实
+            if (resp.getSessionId() != null) {
+                List<AgentMessage> messages = messageMapper.selectList(
+                        Wrappers.<AgentMessage>lambdaQuery()
+                                .eq(AgentMessage::getSessionId, resp.getSessionId())
+                                .eq(AgentMessage::getRole, "ASSISTANT"));
+                assertThat(messages).isEmpty();
+            }
+        } finally {
+            server500.stop(0);
+        }
+    }
+
+    /** 返回 500 的服务桩（计数） */
+    private HttpServer start500Server(AtomicInteger hits) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            hits.incrementAndGet();
+            String json = "{\"error\":{\"message\":\"server exploded\",\"type\":\"server_error\"}}";
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(500, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        return server;
     }
 
     // ==================== 测试数据工厂 ====================

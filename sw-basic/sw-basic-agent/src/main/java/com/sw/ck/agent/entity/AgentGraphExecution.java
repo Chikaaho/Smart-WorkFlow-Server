@@ -52,4 +52,10 @@ public class AgentGraphExecution extends BaseEntity {
 
     /** 整次执行耗时（毫秒） */
     private Long latencyMs;
+
+    /** 本次图执行全部 LLM 节点输入 Token 汇总（未知时不参与计算） */
+    private Long inputTokens;
+
+    /** 本次图执行全部 LLM 节点输出 Token 汇总（未知时不参与计算） */
+    private Long outputTokens;
 }

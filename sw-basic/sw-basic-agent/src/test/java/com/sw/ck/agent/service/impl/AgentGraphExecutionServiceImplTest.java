@@ -49,6 +49,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -248,6 +250,8 @@ class AgentGraphExecutionServiceImplTest {
                     error_category    VARCHAR(50),
                     error_message     CLOB,
                     latency_ms        BIGINT,
+                    input_tokens      BIGINT,
+                    output_tokens     BIGINT,
                     create_time       TIMESTAMP,
                     create_by         VARCHAR(64),
                     update_time       TIMESTAMP,
@@ -268,6 +272,8 @@ class AgentGraphExecutionServiceImplTest {
                     node_id           VARCHAR(100) NOT NULL,
                     node_type         VARCHAR(20)  NOT NULL,
                     node_latency_ms   BIGINT,
+                    input_tokens      BIGINT,
+                    output_tokens     BIGINT,
                     variable_snapshot CLOB,
                     create_time       TIMESTAMP,
                     create_by         VARCHAR(64),
@@ -991,6 +997,352 @@ class AgentGraphExecutionServiceImplTest {
                         .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
     }
 
+    // ==================== 用例36-41：F02 Token 落库查询 + 会话/租户隔离 + 部分 usage（M07-F04-02 D164 补证） ====================
+
+    /** 带 usage metadata 的 ChatModel 桩：每次 call 返回固定 reply + 固定 token；token 序列化输入输出独立可控 */
+    static class TokenStubChatModel implements ChatModel {
+        private final String reply;
+        private final Long promptTokens;
+        private final Long completionTokens;
+        private int callCount = 0;
+
+        TokenStubChatModel(String reply, Long promptTokens, Long completionTokens) {
+            this.reply = reply;
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+        }
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            callCount++;
+            AssistantMessage assistantMessage = new AssistantMessage(reply);
+            Generation generation = new Generation(assistantMessage);
+            // promptTokens/completionTokens 为 null 时模拟供应商未返回 usage
+            // （Spring AI 以 EmptyUsage 占位，恒返回 0 → 必须被采集层排除为未知）
+            if (promptTokens == null || completionTokens == null) {
+                ChatResponseMetadata emptyMetadata = ChatResponseMetadata.builder()
+                        .usage(new org.springframework.ai.chat.metadata.EmptyUsage())
+                        .build();
+                return new ChatResponse(List.of(generation), emptyMetadata);
+            }
+            DefaultUsage usage = new DefaultUsage(
+                    promptTokens.intValue(), completionTokens.intValue(),
+                    (int) (promptTokens + completionTokens));
+            ChatResponseMetadata metadata = ChatResponseMetadata.builder().usage(usage).build();
+            return new ChatResponse(List.of(generation), metadata);
+        }
+
+        int getCallCount() {
+            return callCount;
+        }
+    }
+
+    @Test
+    @DisplayName("用例36: 标准1/2-F02 — 单 LLM 节点 token 经生产 Service 落库：执行记录汇总列 + 节点明细列 + 列表/详情/nodes 查询全部返回（DB 实际值可复算）")
+    void execute_tokenUsage_shouldPersistToExecutionAndNodeRecordsAndBeQueryable() {
+        Long modelId = insertModelConfig("openai-token1", "sk-token1");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("token回复", 10L, 20L));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        assertThat(resp.isSuccess()).isTrue();
+
+        // ① 执行记录落库（sw_agent_graph_execution 表 input_tokens/output_tokens 汇总列）
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getInputTokens()).isEqualTo(10L);
+        assertThat(exec.getOutputTokens()).isEqualTo(20L);
+
+        // ② 节点明细落库（sw_agent_graph_execution_node 表，LLM 节点带 token；START/END 为 null）
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .orderByAsc(AgentGraphExecutionNode::getNodeSeq));
+        assertThat(nodes).hasSize(3);
+        assertThat(nodes.get(0).getNodeType()).isEqualTo("START");
+        assertThat(nodes.get(0).getInputTokens()).isNull();
+        assertThat(nodes.get(1).getNodeType()).isEqualTo("LLM");
+        assertThat(nodes.get(1).getInputTokens()).isEqualTo(10L);
+        assertThat(nodes.get(1).getOutputTokens()).isEqualTo(20L);
+        assertThat(nodes.get(2).getNodeType()).isEqualTo("END");
+        assertThat(nodes.get(2).getOutputTokens()).isNull();
+
+        // ③ 生产查询端点：列表 DTO 含 token 汇总
+        PageResult<AgentGraphExecutionDTO> page = service.pageExecutions(new PageParam(), id);
+        assertThat(page.getRecords()).anySatisfy(dto -> {
+            assertThat(dto.getInputTokens()).isEqualTo(10L);
+            assertThat(dto.getOutputTokens()).isEqualTo(20L);
+        });
+        // ④ 详情 DTO 含 token 汇总
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getInputTokens()).isEqualTo(10L);
+        assertThat(detail.getOutputTokens()).isEqualTo(20L);
+        // ⑤ 节点轨迹端点 DTO 含节点级 token
+        List<AgentGraphExecutionNodeDTO> nodeDtos = service.listExecutionNodes(resp.getExecutionId());
+        assertThat(nodeDtos.get(1).getInputTokens()).isEqualTo(10L);
+        assertThat(nodeDtos.get(1).getOutputTokens()).isEqualTo(20L);
+        assertThat(nodeDtos.get(0).getInputTokens()).isNull();
+    }
+
+    @Test
+    @DisplayName("用例37: 标准2-F02 — 两 LLM 节点链经生产 Service 落库：执行汇总=两节点和，查询结果与调用事实复算一致")
+    void execute_twoLlmChain_shouldAggregateTokensInExecutionRecord() {
+        Long modelId = insertModelConfig("openai-token2", "sk-token2");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("回复1", 10L, 20L),
+                        new TokenStubChatModel("回复2", 30L, 40L));
+        // 两 LLM 节点链
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_llm1", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_llm2", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_llm1", Map.of()),
+                edge("e2", "node_llm1", "node_llm2", Map.of()),
+                edge("e3", "node_llm2", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        assertThat(resp.isSuccess()).isTrue();
+
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        // 执行级汇总 = 两节点 input 和 / output 和（生产 Service 聚合，非解释器 trace 直接求和）
+        assertThat(exec.getInputTokens()).isEqualTo(40L);  // 10 + 30
+        assertThat(exec.getOutputTokens()).isEqualTo(60L); // 20 + 40
+
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .orderByAsc(AgentGraphExecutionNode::getNodeSeq));
+        // 两个 LLM 节点各自独立落库（nodeSeq 2 与 3），不去重
+        assertThat(nodes).hasSize(4);
+        assertThat(nodes.get(1).getNodeId()).isEqualTo("node_llm1");
+        assertThat(nodes.get(1).getInputTokens()).isEqualTo(10L);
+        assertThat(nodes.get(1).getOutputTokens()).isEqualTo(20L);
+        assertThat(nodes.get(2).getNodeId()).isEqualTo("node_llm2");
+        assertThat(nodes.get(2).getInputTokens()).isEqualTo(30L);
+        assertThat(nodes.get(2).getOutputTokens()).isEqualTo(40L);
+
+        // 复算：Σ节点 input = 执行记录 input
+        long sumInput = nodes.stream().filter(n -> n.getInputTokens() != null)
+                .mapToLong(AgentGraphExecutionNode::getInputTokens).sum();
+        long sumOutput = nodes.stream().filter(n -> n.getOutputTokens() != null)
+                .mapToLong(AgentGraphExecutionNode::getOutputTokens).sum();
+        assertThat(sumInput).isEqualTo(exec.getInputTokens());
+        assertThat(sumOutput).isEqualTo(exec.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("用例38: 标准2-F02 — LOOP 同节点重复执行 token 不去重：3 轮调用分别落 3 行节点明细，执行汇总=3 倍")
+    void execute_loopRepeatedNode_shouldRecordTokensPerExecutionNotDeduped() {
+        Long modelId = insertModelConfig("openai-token3", "sk-token3");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("继续", 5L, 5L),
+                        new TokenStubChatModel("继续", 5L, 5L),
+                        new TokenStubChatModel("退出", 5L, 5L));
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_loop", "LOOP", Map.of("maxIterations", 3)),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId)),
+                node("node_cond", "CONDITION", Map.of()),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_loop", Map.of()),
+                edge("e2", "node_loop", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_cond", Map.of()),
+                edge("e_exit", "node_cond", "node_end", Map.of("keyword", "退出")),
+                edge("e_back", "node_cond", "node_loop", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "开始");
+        assertThat(resp.isSuccess()).isTrue();
+
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        // 3 轮 × 5 = 15（同节点重复执行不去重，与 D161 方法级结论一致的落库版）
+        assertThat(exec.getInputTokens()).isEqualTo(15L);
+        assertThat(exec.getOutputTokens()).isEqualTo(15L);
+
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .eq(AgentGraphExecutionNode::getNodeType, "LLM"));
+        // 3 行 LLM 明细（同一 nodeId 3 次执行各自独立），nodeSeq 递增
+        assertThat(nodes).hasSize(3);
+        assertThat(nodes).allSatisfy(n -> {
+            assertThat(n.getNodeId()).isEqualTo("node_llm");
+            assertThat(n.getInputTokens()).isEqualTo(5L);
+            assertThat(n.getOutputTokens()).isEqualTo(5L);
+        });
+        assertThat(nodes.get(0).getNodeSeq()).isLessThan(nodes.get(1).getNodeSeq());
+        assertThat(nodes.get(1).getNodeSeq()).isLessThan(nodes.get(2).getNodeSeq());
+    }
+
+    @Test
+    @DisplayName("用例39: 标准4-F02 — 供应商缺失 usage（无 metadata）→ 执行/节点 token 列 NULL 而非 0；列表/详情同样为 null")
+    void execute_noUsage_shouldStoreNullNotZeroInExecutionAndNodes() {
+        Long modelId = insertModelConfig("openai-token4", "sk-token4");
+        // 不带 usage 的响应（null 语义）
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("无usage回复", null, null));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        assertThat(resp.isSuccess()).isTrue();
+
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getInputTokens()).isNull();
+        assertThat(exec.getOutputTokens()).isNull();
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .eq(AgentGraphExecutionNode::getNodeType, "LLM"));
+        assertThat(nodes).hasSize(1);
+        assertThat(nodes.get(0).getInputTokens()).isNull();
+        assertThat(nodes.get(0).getOutputTokens()).isNull();
+        // 查询端点同样为 null（与 0 严格区分，未知语义贯穿 DB→DTO）
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getInputTokens()).isNull();
+        assertThat(detail.getOutputTokens()).isNull();
+    }
+
+    @Test
+    @DisplayName("用例40: 标准4-F02 — 供应商部分 usage（仅返回 input 缺失 output）→ 各自独立 NULL/数值，不估算另一侧")
+    void execute_partialUsage_shouldKeepIndependentNullPerSide() {
+        Long modelId = insertModelConfig("openai-token5", "sk-token5");
+        // 部分 usage：输入侧有 10，输出侧缺失（DefaultUsage 仅注入 promptTokens）
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenPartialStubChatModel());
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        assertThat(resp.isSuccess()).isTrue();
+
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        // input=10 有值，output 保持 NULL（不补零、不估算）
+        assertThat(exec.getInputTokens()).isEqualTo(10L);
+        assertThat(exec.getOutputTokens()).isNull();
+
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .eq(AgentGraphExecutionNode::getNodeType, "LLM"));
+        assertThat(nodes.get(0).getInputTokens()).isEqualTo(10L);
+        assertThat(nodes.get(0).getOutputTokens()).isNull();
+
+        // 查询端点保持一致：input=10 / output=null
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getInputTokens()).isEqualTo(10L);
+        assertThat(detail.getOutputTokens()).isNull();
+    }
+
+    /** 部分 usage 桩：仅 promptTokens=10，completionTokens 缺失（nativeUsage 原始 record 模拟 OpenAI 响应） */
+    static class TokenPartialStubChatModel implements ChatModel {
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            AssistantMessage assistantMessage = new AssistantMessage("部分usage回复");
+            Generation generation = new Generation(assistantMessage);
+            // 模拟真实 OpenAI 响应：nativeUsage=OpenAiApi.Usage(10, null, null)——
+            // DefaultUsage 会 0 归一，但 TokenUsageResolver 优先读 nativeUsage 原始 null
+            DefaultUsage usage = new DefaultUsage(10, 0, 10, new UsageRecord(10, null, null));
+            ChatResponseMetadata metadata = ChatResponseMetadata.builder().usage(usage).build();
+            return new ChatResponse(List.of(generation), metadata);
+        }
+    }
+
+    /** 模拟 OpenAiApi.Usage record 形状：缺失字段为 null（供 nativeUsage 反射读取） */
+    static class UsageRecord {
+        private final Integer promptTokens;
+        private final Integer completionTokens;
+        private final Integer totalTokens;
+
+        UsageRecord(Integer promptTokens, Integer completionTokens, Integer totalTokens) {
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+            this.totalTokens = totalTokens;
+        }
+
+        public Integer promptTokens() {
+            return promptTokens;
+        }
+
+        public Integer completionTokens() {
+            return completionTokens;
+        }
+
+        public Integer totalTokens() {
+            return totalTokens;
+        }
+    }
+
+    @Test
+    @DisplayName("用例41: 标准3-F02 — 图执行历史跨租户不串计：租户 B 列表为空 + 详情/节点 NOT_FOUND（token 数据随记录隔离）")
+    void executionTokenRecords_crossTenant_shouldBeIsolated() {
+        Long modelId = insertModelConfig("openai-token6", "sk-token6");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("租户回复", 10L, 20L));
+        Long id = createPublishedGraph(llmGraph(modelId));
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        assertThat(resp.isSuccess()).isTrue();
+        assertThat(executionMapper.selectById(resp.getExecutionId()).getInputTokens()).isEqualTo(10L);
+
+        setLoginUser(TENANT_200, USER_1);
+        // 列表：租户 B 视角零记录（不泄漏租户 A 的 token 汇总）
+        assertThat(service.pageExecutions(new PageParam(), null).getTotal()).isZero();
+        // 详情/节点：NOT_FOUND
+        assertThatThrownBy(() -> service.getExecution(resp.getExecutionId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+        assertThatThrownBy(() -> service.listExecutionNodes(resp.getExecutionId()))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode())
+                        .isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+    }
+
+    @Test
+    @DisplayName("用例42: 标准7-历史兼容 — 迁移前 token 列 NULL 的执行记录经列表/详情/节点查询正常返回，token 显示未知（null）而非 0")
+    void preMigrationRecords_withNullTokens_shouldBeReadableViaAllQueryEndpoints() {
+        Long modelId = insertModelConfig("openai-token7", "sk-token7");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("历史回复"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+
+        // 执行一次（当前列已 nullable），再手工把 token 列清成 NULL 模拟迁移前记录
+        AgentGraphExecuteRespDTO resp = service.execute(id, "入参");
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        exec.setInputTokens(null);
+        exec.setOutputTokens(null);
+        executionMapper.updateById(exec);
+        // 节点明细同样清空 token
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId()));
+        for (AgentGraphExecutionNode node : nodes) {
+            node.setInputTokens(null);
+            node.setOutputTokens(null);
+            executionNodeMapper.updateById(node);
+        }
+
+        // ① 列表：可读，token 为 null（未知）
+        PageResult<AgentGraphExecutionDTO> page = service.pageExecutions(new PageParam(), id);
+        assertThat(page.getRecords()).anySatisfy(dto -> {
+            assertThat(dto.getStatus()).isEqualTo("SUCCESS");
+            assertThat(dto.getInputTokens()).isNull();
+            assertThat(dto.getOutputTokens()).isNull();
+        });
+        // ② 详情：可读（输入/输出/状态完整），token null
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getInput()).isEqualTo("入参");
+        assertThat(detail.getOutput()).isEqualTo("历史回复");
+        assertThat(detail.getInputTokens()).isNull();
+        assertThat(detail.getOutputTokens()).isNull();
+        // ③ 节点轨迹：可读，LLM 节点 token null
+        List<AgentGraphExecutionNodeDTO> nodeDtos = service.listExecutionNodes(resp.getExecutionId());
+        assertThat(nodeDtos).hasSize(3);
+        assertThat(nodeDtos.get(1).getNodeType()).isEqualTo("LLM");
+        assertThat(nodeDtos.get(1).getInputTokens()).isNull();
+        assertThat(nodeDtos.get(1).getOutputTokens()).isNull();
+    }
+
     // ==================== 用例31-35：Prompt 配置发布/重载/授权 + 未定义变量真实落库链（D151 补证） ====================
 
     @Test
@@ -1160,6 +1512,105 @@ class AgentGraphExecutionServiceImplTest {
         // 此处用新 mock 重新验证消息构造：通过 InterpreterTest 用例 26/35 已精确断言消息列表
         // 此处仅验证执行成功 + 输出非空 = prompt 配置经 Service 全链生效
         assertThat(resp.getOutput()).isNotBlank();
+    }
+
+    // ==================== D165 补证：工具调用与非账单语义、历史 FAILED、逻辑删除 ====================
+
+    @Test
+    @DisplayName("D165-标准5-工具：TOOL 节点执行成功后，图执行落库 status=SUCCESS 且 token 字段不受工具调用污染（工具递归语义仅当前供应商 usage）")
+    void execute_toolNode_tokenFieldsShouldRemainNull_notPollutedByToolCall() {
+        insertInternalTool("echo_tool", 1);
+        ToolCallback echo = FunctionToolCallback.builder("echo_tool", (String s) -> "echo:" + s)
+                .description("回声工具")
+                .inputType(String.class)
+                .build();
+        when(toolCallbackFactory.buildToolCallbacks(any())).thenReturn(List.of(echo));
+        Long modelId = insertModelConfig("openai-tool-token", "sk-tool-token");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new TokenStubChatModel("工具后LLM回复", 12L, 34L));
+        // TOOL -> LLM 链：工具执行不产生 token，执行汇总应仅统计 LLM 节点
+        ProcessGraph graph = graphOf(
+                node("node_start", "START", Map.of()),
+                node("node_tool", "TOOL", Map.of("toolName", "echo_tool", "outputVar", "toolResult")),
+                node("node_llm", "LLM", Map.of("agentModelConfigId", modelId, "inputVar", "toolResult")),
+                node("node_end", "END", Map.of()),
+                edge("e1", "node_start", "node_tool", Map.of()),
+                edge("e2", "node_tool", "node_llm", Map.of()),
+                edge("e3", "node_llm", "node_end", Map.of()));
+        Long id = createPublishedGraph(graph);
+
+        AgentGraphExecuteRespDTO resp = service.execute(id, "触发工具");
+
+        assertThat(resp.isSuccess()).isTrue();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getInputTokens()).isEqualTo(12L);
+        assertThat(exec.getOutputTokens()).isEqualTo(34L);
+        List<AgentGraphExecutionNode> nodes = executionNodeMapper.selectList(
+                Wrappers.<AgentGraphExecutionNode>lambdaQuery()
+                        .eq(AgentGraphExecutionNode::getExecutionId, exec.getId())
+                        .orderByAsc(AgentGraphExecutionNode::getNodeSeq));
+        // TOOL 节点 token 恒为 null，不参与汇总
+        AgentGraphExecutionNode toolNode = nodes.stream().filter(n -> "TOOL".equals(n.getNodeType())).findFirst().orElseThrow();
+        assertThat(toolNode.getInputTokens()).isNull();
+        assertThat(toolNode.getOutputTokens()).isNull();
+    }
+
+    @Test
+    @DisplayName("D165-标准7-历史FAILED：迁移前 FAILED 记录（model/token 列 NULL）经列表/详情/节点查询正常读取，不丢错误分类")
+    void preMigrationFailedRecord_shouldBeReadableWithErrorCategoryIntact() {
+        Long modelId = insertModelConfig("openai-hist-failed", "sk-hist-failed");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new ThrowingChatModel());
+        Long id = createPublishedGraph(llmGraph(modelId));
+        AgentGraphExecuteRespDTO resp = service.execute(id, "触发失败");
+        assertThat(resp.isSuccess()).isFalse();
+        AgentGraphExecution exec = executionMapper.selectById(resp.getExecutionId());
+        assertThat(exec.getStatus()).isEqualTo("FAILED");
+        assertThat(exec.getErrorCategory()).isEqualTo("MODEL_CALL_FAILED");
+
+        // 模拟历史 FAILED：清 token 列但保留错误分类
+        exec.setInputTokens(null);
+        exec.setOutputTokens(null);
+        executionMapper.updateById(exec);
+
+        PageResult<AgentGraphExecutionDTO> page = service.pageExecutions(new PageParam(), id);
+        assertThat(page.getRecords()).anySatisfy(dto -> {
+            assertThat(dto.getStatus()).isEqualTo("FAILED");
+            assertThat(dto.getErrorCategory()).isEqualTo("MODEL_CALL_FAILED");
+            assertThat(dto.getInputTokens()).isNull();
+        });
+        AgentGraphExecutionDetailDTO detail = service.getExecution(resp.getExecutionId());
+        assertThat(detail.getStatus()).isEqualTo("FAILED");
+        assertThat(detail.getErrorCategory()).isEqualTo("MODEL_CALL_FAILED");
+        assertThat(detail.getInputTokens()).isNull();
+        assertThat(detail.getOutputTokens()).isNull();
+        List<AgentGraphExecutionNodeDTO> nodeDtos = service.listExecutionNodes(resp.getExecutionId());
+        assertThat(nodeDtos).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("D165-标准8-逻辑删除：sw_agent_graph_execution 逻辑删除后，列表/详情/节点查询不可见（@TableLogic）")
+    void logicallyDeletedExecution_shouldBeInvisibleViaQueries() {
+        Long modelId = insertModelConfig("openai-delete", "sk-delete");
+        when(chatModelFactory.build(any(AgentModelConfig.class), anyString()))
+                .thenReturn(new StubChatModel("待删除执行输出"));
+        Long id = createPublishedGraph(llmGraph(modelId));
+        AgentGraphExecuteRespDTO resp = service.execute(id, "待删除入参");
+        assertThat(resp.isSuccess()).isTrue();
+        Long execId = resp.getExecutionId();
+
+        // 逻辑删除（MP @TableLogic）
+        executionMapper.deleteById(execId);
+        // 列表不可见
+        PageResult<AgentGraphExecutionDTO> page = service.pageExecutions(new PageParam(), id);
+        assertThat(page.getTotal()).isZero();
+        // 详情/节点 404
+        assertThatThrownBy(() -> service.getExecution(execId))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode()).isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
+        assertThatThrownBy(() -> service.listExecutionNodes(execId))
+                .isInstanceOf(BaseException.class)
+                .satisfies(ex -> assertThat(((BaseException) ex).getCode()).isEqualTo(CommonErrorCode.NOT_FOUND.getCode()));
     }
 
     // ==================== 内部辅助 ====================

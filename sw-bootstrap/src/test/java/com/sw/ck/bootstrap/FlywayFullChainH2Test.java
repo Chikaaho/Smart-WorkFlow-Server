@@ -24,8 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * BPM 迁移链纳入真实 H2 全链 Flyway 验证的永久测试（不启动 Spring 上下文）。
  * <p>
  * 使用独立内存库 + 独立 Flyway 实例，7 个 locations 与 {@code application.yml}
- * 完全一致（{vendor} 按 H2 连接解析为 h2）。全链共 30 条迁移
- * （28 条原冒烟口径 + BPM V8/V14 两枚）。
+ * 完全一致（{vendor} 按 H2 连接解析为 h2）。全链共 35 条迁移
+ * （含 V35 Agent Token Usage）。
  * </p>
  * <p>
  * H2 不支持 PG 的 partial unique index，BPM V8 在 H2 侧用生成列
@@ -74,20 +74,22 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(34, result.migrationsExecuted,
-                "全链迁移计数应为 34（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组），实际: " + result.migrationsExecuted);
+        assertEquals(36, result.migrationsExecuted,
+                "全链迁移计数应为 36（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 34 条，包含 BPM V8/V14/P24 V31/V32/V33/V34")
-    void appliedMigrationCount_shouldBe34() {
+    @DisplayName("全链迁移后：info().applied() 共 36 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36")
+    void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(34, applied.length, "已应用迁移数应为 34");
+        assertEquals(36, applied.length, "已应用迁移数应为 36");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
         boolean v33Seen = false;
         boolean v34Seen = false;
+        boolean v35Seen = false;
+        boolean v36Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -104,12 +106,20 @@ class FlywayFullChainH2Test {
             if ("34".equals(info.getVersion().getVersion())) {
                 v34Seen = true;
             }
+            if ("35".equals(info.getVersion().getVersion())) {
+                v35Seen = true;
+            }
+            if ("36".equals(info.getVersion().getVersion())) {
+                v36Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
         assertTrue(v31Seen, "P24 V31 应已应用");
         assertTrue(v33Seen, "V33 大模型菜单 seed 应已应用");
         assertTrue(v34Seen, "V34 用户组迁移应已应用");
+        assertTrue(v35Seen, "V35 Agent Token Usage 应已应用");
+        assertTrue(v36Seen, "V36 调试会话应已应用");
     }
 
     @Test
@@ -177,9 +187,9 @@ class FlywayFullChainH2Test {
     }
 
     @Test
-    @DisplayName("V33/V34：V32→链尾升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
-    void upgradeChain_V32_to_V34_shouldPass() throws SQLException {
-        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v34a;DB_CLOSE_DELAY=-1";
+    @DisplayName("V33/V34/V35：V32→链尾升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
+    void upgradeChain_V32_to_V35_shouldPass() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v35a;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
                 .map(location -> location.replace("{vendor}", "h2"))
                 .toArray(String[]::new);
@@ -198,7 +208,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(2, second.migrationsExecuted, "升级链应只执行 V33/V34 两条，实际: " + second.migrationsExecuted);
+        assertEquals(4, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36 四条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -234,9 +244,9 @@ class FlywayFullChainH2Test {
     }
 
     @Test
-    @DisplayName("V34：V33→V34 升级链（先至 V33 再全量）执行成功，且用户组表/唯一约束产物正确")
-    void upgradeChain_V33_to_V34_shouldPass() throws SQLException {
-        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v34;DB_CLOSE_DELAY=-1";
+    @DisplayName("V34/V35：V33→V35 升级链（先至 V33 再全量）执行成功，且用户组表/唯一约束产物正确")
+    void upgradeChain_V33_to_V35_shouldPass() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v35;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
                 .map(location -> location.replace("{vendor}", "h2"))
                 .toArray(String[]::new);
@@ -254,8 +264,8 @@ class FlywayFullChainH2Test {
                 .locations(locations)
                 .load();
         MigrateResult second = full.migrate();
-        assertTrue(second.success, "V33→V34 升级链应成功");
-        assertEquals(1, second.migrationsExecuted, "升级链应只执行 V34 一条，实际: " + second.migrationsExecuted);
+        assertTrue(second.success, "V33→V36 升级链应成功");
+        assertEquals(3, second.migrationsExecuted, "升级链应只执行 V34/V35/V36 三条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {

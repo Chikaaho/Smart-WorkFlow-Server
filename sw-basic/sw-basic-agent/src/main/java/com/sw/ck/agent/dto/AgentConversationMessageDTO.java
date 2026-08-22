@@ -22,6 +22,12 @@ public class AgentConversationMessageDTO {
     /** 会话内顺序号（0-based） */
     private Integer msgOrder;
 
+    /** 供应商返回的输入 Token 数（未知时为 null，不为 0） */
+    private Long inputTokens;
+
+    /** 供应商返回的输出 Token 数（未知时为 null，不为 0） */
+    private Long outputTokens;
+
     /** 创建时间 */
     private LocalDateTime createTime;
 }
