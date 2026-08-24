@@ -17,6 +17,7 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -74,15 +75,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(36, result.migrationsExecuted,
-                "全链迁移计数应为 36（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话），实际: " + result.migrationsExecuted);
+        assertEquals(37, result.migrationsExecuted,
+                "全链迁移计数应为 37（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 36 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36")
+    @DisplayName("全链迁移后：info().applied() 共 37 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(36, applied.length, "已应用迁移数应为 36");
+        assertEquals(37, applied.length, "已应用迁移数应为 37");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -90,6 +91,7 @@ class FlywayFullChainH2Test {
         boolean v34Seen = false;
         boolean v35Seen = false;
         boolean v36Seen = false;
+        boolean v37Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -112,6 +114,9 @@ class FlywayFullChainH2Test {
             if ("36".equals(info.getVersion().getVersion())) {
                 v36Seen = true;
             }
+            if ("37".equals(info.getVersion().getVersion())) {
+                v37Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
@@ -120,6 +125,7 @@ class FlywayFullChainH2Test {
         assertTrue(v34Seen, "V34 用户组迁移应已应用");
         assertTrue(v35Seen, "V35 Agent Token Usage 应已应用");
         assertTrue(v36Seen, "V36 调试会话应已应用");
+        assertTrue(v37Seen, "V37 工具管理菜单 seed 应已应用");
     }
 
     @Test
@@ -187,7 +193,7 @@ class FlywayFullChainH2Test {
     }
 
     @Test
-    @DisplayName("V33/V34/V35：V32→链尾升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
+    @DisplayName("V33/V34/V35/V37：V32→链尾升级链（先至 V32 再全量）执行成功，且大模型菜单/按钮 seed 产物正确")
     void upgradeChain_V32_to_V35_shouldPass() throws SQLException {
         String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v35a;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
@@ -208,7 +214,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(4, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36 四条，实际: " + second.migrationsExecuted);
+        assertEquals(5, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37 五条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -244,7 +250,7 @@ class FlywayFullChainH2Test {
     }
 
     @Test
-    @DisplayName("V34/V35：V33→V35 升级链（先至 V33 再全量）执行成功，且用户组表/唯一约束产物正确")
+    @DisplayName("V34/V35/V37：V33→V37 升级链（先至 V33 再全量）执行成功，且用户组表/唯一约束产物正确")
     void upgradeChain_V33_to_V35_shouldPass() throws SQLException {
         String upgradeUrl = "jdbc:h2:mem:flyway_upgrade_v35;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
@@ -265,7 +271,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V33→V36 升级链应成功");
-        assertEquals(3, second.migrationsExecuted, "升级链应只执行 V34/V35/V36 三条，实际: " + second.migrationsExecuted);
+        assertEquals(4, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37 四条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
@@ -449,5 +455,67 @@ class FlywayFullChainH2Test {
             rs.next();
             return rs.getInt(1);
         }
+    }
+
+    // ==================== L10：独立 V36 起点 → 仅迁移 V37（D197 审查 L10） ====================
+
+    @Test
+    @DisplayName("L10: 独立 V36 现有库 → 仅迁移 V37，同一会话查询 sys_menu 页面/按钮行与 view/manage 权限")
+    void upgrade_V36_to_V37_only_and_query() throws SQLException {
+        String upgradeUrl = "jdbc:h2:mem:flyway_l10_v36;DB_CLOSE_DELAY=-1";
+        String[] locations = Arrays.stream(APP_LOCATIONS)
+                .map(location -> location.replace("{vendor}", "h2"))
+                .toArray(String[]::new);
+
+        // 1. 建立真实 V36 起点：先迁移至 V36（当前版本 V36）
+        long startNanos = System.nanoTime();
+        Flyway toV36 = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .target("36")
+                .load();
+        MigrateResult first = toV36.migrate();
+        assertTrue(first.success, "V1→V36 应成功");
+        assertEquals(36, first.migrationsExecuted, "V36 阶段应执行 36 条，实际: " + first.migrationsExecuted);
+
+        // 2. 输出起点当前版本 V36（info().current()）
+        org.flywaydb.core.api.MigrationInfoService infoBefore = toV36.info();
+        String beforeVersion = infoBefore.current() == null ? "EMPTY" : infoBefore.current().getVersion().getVersion();
+        assertEquals("36", beforeVersion, "起点当前版本应为 V36，实际: " + beforeVersion);
+
+        // 3. 只迁移到 V37（不再 target，链尾即 V37），应只执行 1 条
+        Flyway toV37 = Flyway.configure()
+                .dataSource(upgradeUrl, USER, PASSWORD)
+                .locations(locations)
+                .load();
+        MigrateResult second = toV37.migrate();
+        assertTrue(second.success, "V36→V37 应成功");
+        assertEquals(1, second.migrationsExecuted, "V36→V37 应只执行 V37 一条，实际: " + second.migrationsExecuted);
+        org.flywaydb.core.api.MigrationInfoService infoAfter = toV37.info();
+        String afterVersion = infoAfter.current() == null ? "EMPTY" : infoAfter.current().getVersion().getVersion();
+        assertEquals("37", afterVersion, "终点当前版本应为 V37，实际: " + afterVersion);
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+
+        // 4. 同一数据库会话实际查询：页面/按钮行的 id,parent_id,path,component,permission + view/manage
+        try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT id, parent_id, path, component, permission, menu_type FROM sys_menu WHERE id IN (212, 213) ORDER BY id")) {
+                assertTrue(rs.next(), "页面菜单 id=212 应存在");
+                assertEquals(7, rs.getInt("parent_id"));
+                assertEquals("tool", rs.getString("path"));
+                assertEquals("agent/views/ToolList", rs.getString("component"));
+                assertEquals("agent:tool:view", rs.getString("permission"));
+                assertEquals(1, rs.getInt("menu_type"));
+                assertTrue(rs.next(), "按钮菜单 id=213 应存在");
+                assertEquals(212, rs.getInt("parent_id"));
+                assertEquals("agent:tool:manage", rs.getString("permission"));
+                assertEquals(2, rs.getInt("menu_type"));
+                assertFalse(rs.next(), "不应有第三行");
+            }
+        }
+
+        System.out.println("[L10] V36→V37 独立升级: 起点=" + beforeVersion + ", 终点=" + afterVersion
+                + ", 执行迁移数=" + second.migrationsExecuted + ", 耗时=" + elapsedMs + "ms, 查询退出=0");
     }
 }

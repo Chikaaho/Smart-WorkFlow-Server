@@ -86,8 +86,8 @@ class FlywayFullChainPostgresTest {
                 .load()
                 .migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(36, result.migrationsExecuted,
-                "全链迁移计数应为 36（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话），实际: "
+        assertEquals(37, result.migrationsExecuted,
+                "全链迁移计数应为 37（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed），实际: "
                         + result.migrationsExecuted);
     }
 
@@ -99,10 +99,10 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 36 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36")
+    @DisplayName("全链迁移后：info().applied() 共 37 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway().info().applied();
-        assertEquals(36, applied.length, "已应用迁移数应为 36");
+        assertEquals(37, applied.length, "已应用迁移数应为 37");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -110,6 +110,7 @@ class FlywayFullChainPostgresTest {
         boolean v34Seen = false;
         boolean v35Seen = false;
         boolean v36Seen = false;
+        boolean v37Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -132,6 +133,9 @@ class FlywayFullChainPostgresTest {
             if ("36".equals(info.getVersion().getVersion())) {
                 v36Seen = true;
             }
+            if ("37".equals(info.getVersion().getVersion())) {
+                v37Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
@@ -140,6 +144,7 @@ class FlywayFullChainPostgresTest {
         assertTrue(v34Seen, "V34 用户组迁移应已应用");
         assertTrue(v35Seen, "V35 Agent Token Usage 应已应用");
         assertTrue(v36Seen, "V36 调试会话应已应用");
+        assertTrue(v37Seen, "V37 工具管理菜单 seed 应已应用");
     }
 
     @Test
@@ -228,7 +233,7 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33/V34/V35/V36（共 36），validate() 通过")
+    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33/V34/V35/V36/V37（共 37），validate() 通过")
     void upgradeChain_V32_to_V35_shouldPass() throws SQLException {
         // 模拟既有库：在独立数据库中先迁移至 V32
         try (Connection conn = DriverManager.getConnection(url, USER, PASSWORD);
@@ -253,7 +258,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(4, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36 四条，实际: " + second.migrationsExecuted);
+        assertEquals(5, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37 五条，实际: " + second.migrationsExecuted);
         full.validate();
     }
 
@@ -277,7 +282,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult first = migrate.migrate();
         assertTrue(first.success, "建立既有库应成功");
-        assertEquals(36, first.migrationsExecuted, "既有库应含全部 36 条，实际: " + first.migrationsExecuted);
+        assertEquals(37, first.migrationsExecuted, "既有库应含全部 37 条，实际: " + first.migrationsExecuted);
 
         // 原始 V13 的 L58 内容（修改前）：DROP INDEX IF EXISTS sw_form_def_form_key_key;
         String originalV13Line = "DROP INDEX IF EXISTS sw_form_def_form_key_key;";

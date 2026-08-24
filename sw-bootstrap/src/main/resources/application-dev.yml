@@ -34,6 +34,7 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       database: ${REDIS_DATABASE:0}
+      password: ${REDIS_PASSWORD:1}
 
   ai:
     openai:
