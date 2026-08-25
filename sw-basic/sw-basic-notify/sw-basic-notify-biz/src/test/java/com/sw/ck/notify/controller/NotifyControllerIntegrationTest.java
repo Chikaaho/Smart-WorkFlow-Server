@@ -182,7 +182,7 @@ class NotifyControllerIntegrationTest {
         long msgId = sendNotify(USER_A);
 
         // Act 1：GET 列表
-        R<List<NotifyMessage>> listResp = notifyController.messages();
+        R<List<NotifyMessage>> listResp = notifyController.messages(null, null);
         List<NotifyMessage> msgs = listResp.getData();
         assertThat(msgs)
                 .as("当前用户应看到 1 条通知")
@@ -267,7 +267,7 @@ class NotifyControllerIntegrationTest {
         LoginUserHolder.set(tenant200User);
 
         // Assert 1：GET 列表 → 空（租户隔离：查不到 TENANT_100 的行）
-        R<List<NotifyMessage>> listResp = notifyController.messages();
+        R<List<NotifyMessage>> listResp = notifyController.messages(null, null);
         assertThat(listResp.getData())
                 .as("TENANT_200 不应看到 TENANT_100 的通知")
                 .isEmpty();
@@ -312,13 +312,238 @@ class NotifyControllerIntegrationTest {
         LoginUserHolder.set(userB);
 
         // Assert：USER_B 的 GET 列表为空（recipient_id != USER_B）
-        R<List<NotifyMessage>> listResp = notifyController.messages();
+        R<List<NotifyMessage>> listResp = notifyController.messages(null, null);
         assertThat(listResp.getData())
                 .as("USER_B 不应看到 USER_A 的通知")
                 .isEmpty();
 
         System.out.println("=== 用户隔离验证 ===");
         System.out.println("  USER_B list count=" + listResp.getData().size() + " ✓");
+    }
+
+    // ==================== 测试 5：删除通知 ====================
+
+    @Test
+    @DisplayName("DELETE 通知 → 逻辑删除 → GET 列表不再出现")
+    void delete_e2e() {
+        // Arrange：发送一条通知给 USER_A
+        long msgId = sendNotify(USER_A);
+
+        // Act：删除
+        R<Void> deleteResp = notifyController.delete(msgId);
+        assertThat(deleteResp.getCode())
+                .as("删除应返回成功码")
+                .isEqualTo(R.SUCCESS_CODE);
+
+        // Assert：GET 列表不再包含该通知
+        R<List<NotifyMessage>> listResp = notifyController.messages(null, null);
+        assertThat(listResp.getData())
+                .as("删除后列表不应包含该通知")
+                .isEmpty();
+
+        // Assert：getById 返回 null（逻辑删除生效）
+        NotifyMessage deleted = notifyMessageService.getById(msgId);
+        assertThat(deleted)
+                .as("逻辑删除后 getById 应返回 null")
+                .isNull();
+
+        System.out.println("=== 删除通知验证 ===");
+        System.out.println("  msgId=" + msgId + ", delete=OK, listCount=0 ✓");
+    }
+
+    // ==================== 测试 6：越权删除 ====================
+
+    @Test
+    @DisplayName("USER_B 调 delete(USER_A 的消息) → BaseException + 消息仍存在")
+    void delete_withWrongRecipient_shouldThrow() {
+        // Arrange：USER_A 发一条通知给自己
+        long msgId = sendNotify(USER_A);
+
+        // Act：切换为 USER_B（同租户 TENANT_100）
+        LoginUser userB = new LoginUser();
+        userB.setUserId(USER_B);
+        userB.setTenantId(TENANT_100);
+        userB.setUsername("user_b");
+        LoginUserHolder.set(userB);
+
+        // Assert：抛 FORBIDDEN
+        assertThatThrownBy(() -> notifyController.delete(msgId))
+                .as("USER_B 调 delete(USER_A 的消息) 应抛 BaseException")
+                .isInstanceOf(BaseException.class)
+                .hasMessageContaining("无权");
+
+        // Assert：消息仍存在且未读
+        testLoginContext.set(TENANT_100, USER_A);
+        LoginUser userA = new LoginUser();
+        userA.setUserId(USER_A);
+        userA.setTenantId(TENANT_100);
+        LoginUserHolder.set(userA);
+
+        NotifyMessage msg = notifyMessageService.getById(msgId);
+        assertThat(msg)
+                .as("越权调用不应删除消息")
+                .isNotNull();
+        assertThat(msg.getRead())
+                .as("越权调用不应改变已读状态")
+                .isFalse();
+
+        System.out.println("=== 越权删除拒绝验证 ===");
+        System.out.println("  msgId=" + msgId + ", recipientId=" + msg.getRecipientId()
+                + ", read=" + msg.getRead() + " ✓");
+    }
+
+    // ==================== 测试 7：跨租户删除 ====================
+
+    @Test
+    @DisplayName("跨租户 DELETE → NOT_FOUND（租户隔离）")
+    void delete_tenantIsolation() {
+        // Arrange：在 TENANT_100 下发一条给 USER_A 的通知
+        long msgId = sendNotifyAs(TENANT_100, USER_A, USER_A);
+
+        // Act：切换到 TENANT_200 上下文
+        testLoginContext.set(TENANT_200, USER_B);
+        LoginUser tenant200User = new LoginUser();
+        tenant200User.setUserId(USER_B);
+        tenant200User.setTenantId(TENANT_200);
+        LoginUserHolder.set(tenant200User);
+
+        // Assert：DELETE → NOT_FOUND（租户隔离：getById 被拦截器过滤）
+        assertThatThrownBy(() -> notifyController.delete(msgId))
+                .as("跨租户 delete 应抛 BaseException")
+                .isInstanceOf(BaseException.class)
+                .hasMessageContaining("不存在");
+
+        // Assert：原消息仍存在
+        testLoginContext.set(TENANT_100, USER_A);
+        LoginUser origUser = new LoginUser();
+        origUser.setUserId(USER_A);
+        origUser.setTenantId(TENANT_100);
+        LoginUserHolder.set(origUser);
+
+        NotifyMessage msg = notifyMessageService.getById(msgId);
+        assertThat(msg)
+                .as("跨租户调用不应删除消息")
+                .isNotNull();
+
+        System.out.println("=== 跨租户删除隔离验证 ===");
+        System.out.println("  msgId=" + msgId + ", tenantId=" + msg.getTenantId() + " ✓");
+    }
+
+    // ==================== 测试 8：查询过滤 - 已读状态 ====================
+
+    @Test
+    @DisplayName("GET ?read=false → 仅未读；GET ?read=true → 仅已读")
+    void filterByReadStatus() {
+        // Arrange：发两条通知给 USER_A
+        long msgId1 = sendNotify(USER_A);
+        // 第二条用不同 bizId 避免 findByRecipient 返回顺序问题
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "第二条", "内容2", NotifyBizType.WF_APPROVED, "biz_002", TENANT_100));
+        List<NotifyMessage> all = notifyMessageService.findByRecipient(USER_A);
+        assertThat(all).as("应有 2 条通知").hasSize(2);
+        long msgId2 = all.stream()
+                .filter(m -> "biz_002".equals(m.getBizId()))
+                .findFirst().orElseThrow().getId();
+
+        // Act：标记第二条为已读
+        notifyController.read(msgId2);
+
+        // Assert 1：read=false → 仅 1 条未读
+        R<List<NotifyMessage>> unreadResp = notifyController.messages(false, null);
+        assertThat(unreadResp.getData())
+                .as("read=false 应返回 1 条未读")
+                .hasSize(1);
+        assertThat(unreadResp.getData().get(0).getId()).isEqualTo(msgId1);
+
+        // Assert 2：read=true → 仅 1 条已读
+        R<List<NotifyMessage>> readResp = notifyController.messages(true, null);
+        assertThat(readResp.getData())
+                .as("read=true 应返回 1 条已读")
+                .hasSize(1);
+        assertThat(readResp.getData().get(0).getId()).isEqualTo(msgId2);
+
+        // Assert 3：read=null → 2 条全部
+        R<List<NotifyMessage>> allResp = notifyController.messages(null, null);
+        assertThat(allResp.getData())
+                .as("read=null 应返回全部 2 条")
+                .hasSize(2);
+
+        System.out.println("=== 已读状态过滤验证 ===");
+        System.out.println("  unread=" + unreadResp.getData().size()
+                + ", read=" + readResp.getData().size()
+                + ", all=" + allResp.getData().size() + " ✓");
+    }
+
+    // ==================== 测试 9：查询过滤 - 关键词 ====================
+
+    @Test
+    @DisplayName("GET ?keyword=审批 → 仅匹配标题或内容包含关键词的通知")
+    void filterByKeyword() {
+        // Arrange：发三条通知
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "请假审批通知", "张三提交了请假申请", NotifyBizType.WF_TODO, "biz_k1", TENANT_100));
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "报销通知", "李四提交了报销单", NotifyBizType.WF_TODO, "biz_k2", TENANT_100));
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "系统公告", "审批流程已更新", NotifyBizType.WF_APPROVED, "biz_k3", TENANT_100));
+
+        // Act：keyword=审批 → 应匹配标题含"审批"的 1 条 + 内容含"审批"的 1 条 = 2 条
+        R<List<NotifyMessage>> resp = notifyController.messages(null, "审批");
+        assertThat(resp.getData())
+                .as("keyword=审批 应匹配 2 条（标题1 + 内容1）")
+                .hasSize(2);
+
+        // Act：keyword=报销 → 应匹配 1 条
+        R<List<NotifyMessage>> resp2 = notifyController.messages(null, "报销");
+        assertThat(resp2.getData())
+                .as("keyword=报销 应匹配 1 条")
+                .hasSize(1);
+
+        // Act：keyword=不存在 → 空
+        R<List<NotifyMessage>> resp3 = notifyController.messages(null, "不存在的内容");
+        assertThat(resp3.getData())
+                .as("keyword=不存在 应返回空")
+                .isEmpty();
+
+        System.out.println("=== 关键词过滤验证 ===");
+        System.out.println("  审批=" + resp.getData().size()
+                + ", 报销=" + resp2.getData().size()
+                + ", 不存在=" + resp3.getData().size() + " ✓");
+    }
+
+    // ==================== 测试 10：组合过滤 ====================
+
+    @Test
+    @DisplayName("GET ?read=false&keyword=请假 → 未读且含关键词")
+    void filterCombined() {
+        // Arrange：发两条通知
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "请假审批通知", "张三提交了请假申请", NotifyBizType.WF_TODO, "biz_c1", TENANT_100));
+        notifyFacade.send(new SendNotifyCommand(
+                USER_A, "请假审批通知2", "另一条请假", NotifyBizType.WF_TODO, "biz_c2", TENANT_100));
+
+        // 标记第二条为已读
+        List<NotifyMessage> all = notifyMessageService.findByRecipient(USER_A);
+        long readId = all.stream()
+                .filter(m -> "biz_c2".equals(m.getBizId()))
+                .findFirst().orElseThrow().getId();
+        notifyController.read(readId);
+
+        // Act：read=false + keyword=请假 → 1 条（仅未读且含请假）
+        R<List<NotifyMessage>> resp = notifyController.messages(false, "请假");
+        assertThat(resp.getData())
+                .as("read=false&keyword=请假 应返回 1 条")
+                .hasSize(1);
+
+        // Act：read=true + keyword=请假 → 1 条（仅已读且含请假）
+        R<List<NotifyMessage>> resp2 = notifyController.messages(true, "请假");
+        assertThat(resp2.getData())
+                .as("read=true&keyword=请假 应返回 1 条")
+                .hasSize(1);
+
+        System.out.println("=== 组合过滤验证 ===");
+        System.out.println("  unread+请假=" + resp.getData().size()
+                + ", read+请假=" + resp2.getData().size() + " ✓");
     }
 
     // ==================== LoginContextProvider 测试实现 ====================
