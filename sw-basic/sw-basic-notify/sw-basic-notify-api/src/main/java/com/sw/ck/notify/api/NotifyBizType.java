@@ -16,5 +16,10 @@ public enum NotifyBizType {
     /**
      * 流程已审批：提交的流程被通过/驳回后通知发起人。
      */
-    WF_APPROVED
+    WF_APPROVED,
+
+    /**
+     * 系统消息：模板发送（P36 / M05-F02-01）等平台侧主动通知。
+     */
+    SYSTEM
 }

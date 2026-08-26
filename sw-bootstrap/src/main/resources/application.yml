@@ -132,6 +132,10 @@ sw:
     enabled: true
     cipher-key: ${SW_CIPHER_KEY:}                                        # AES-256-GCM 密钥（Base64），与 sw.external-datasource.cipher-key 同构共享
 
+  # ---------- 站内信 / 消息模板（M05，P36 消息模板管理） ----------
+  notify:
+    enabled: true
+
   # ---------- 多租户（列级隔离） ----------
   tenant:
     ignore-tables:
