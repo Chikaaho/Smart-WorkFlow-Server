@@ -677,8 +677,10 @@ class NotifyTemplateSecurityIntegrationTest {
         }
 
         @Bean
-        public NotifyMessageService notifyMessageService() {
-            return new NotifyMessageServiceImpl();
+        public NotifyMessageService notifyMessageService(NotifyTemplateServiceImpl notifyTemplateServiceImpl,
+                                                         TemplateRenderService templateRenderService,
+                                                         LoginContextProvider loginContextProvider) {
+            return new NotifyMessageServiceImpl(notifyTemplateServiceImpl, templateRenderService, loginContextProvider);
         }
 
         @Bean

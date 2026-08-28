@@ -10,13 +10,21 @@ import com.sw.ck.common.config.mybatis.CommonMetaObjectHandler;
 import com.sw.ck.common.config.mybatis.tenant.CommonTenantLineHandler;
 import com.sw.ck.common.config.mybatis.tenant.TenantProperties;
 import com.sw.ck.common.datascope.DataScopeType;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.notify.api.NotifyBizType;
 import com.sw.ck.notify.api.NotifyFacade;
 import com.sw.ck.notify.api.SendNotifyCommand;
+import com.sw.ck.notify.dto.NotifyTemplateDTO;
+import com.sw.ck.notify.dto.NotifyTemplateQuery;
+import com.sw.ck.notify.dto.TemplatePreviewRequest;
+import com.sw.ck.notify.dto.TemplatePreviewResult;
+import com.sw.ck.notify.entity.NotifyTemplate;
 import com.sw.ck.notify.impl.NotifyFacadeImpl;
 import com.sw.ck.notify.mapper.NotifyMessageMapper;
+import com.sw.ck.notify.render.TemplateRenderService;
 import com.sw.ck.notify.service.NotifyMessageService;
+import com.sw.ck.notify.service.NotifyTemplateService;
 import com.sw.ck.notify.service.impl.NotifyMessageServiceImpl;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -365,8 +373,41 @@ class NotifyMessageIntegrationTest {
         }
 
         @Bean
-        public NotifyMessageService notifyMessageService() {
-            return new NotifyMessageServiceImpl();
+        public TemplateRenderService templateRenderService() {
+            return new TemplateRenderService();
+        }
+
+        @Bean
+        public NotifyTemplateService notifyTemplateService() {
+            return new NotifyTemplateService() {
+                @Override
+                public PageResult<NotifyTemplateDTO> pageTemplates(NotifyTemplateQuery query) { return null; }
+                @Override
+                public NotifyTemplateDTO getTemplate(Long id) { return null; }
+                @Override
+                public Long createTemplate(NotifyTemplateDTO dto) { return null; }
+                @Override
+                public void updateTemplate(Long id, NotifyTemplateDTO dto) {}
+                @Override
+                public void deleteTemplate(Long id) {}
+                @Override
+                public void toggleTemplate(Long id, boolean enabled) {}
+                @Override
+                public TemplatePreviewResult renderPreview(TemplatePreviewRequest request) { return null; }
+                @Override
+                public TemplatePreviewResult previewByCode(String templateCode, java.util.Map<String, String> variables) { return null; }
+                @Override
+                public java.util.Set<String> extractVariables(String titleTemplate, String contentTemplate) { return java.util.Set.of(); }
+                @Override
+                public NotifyTemplate getEnabledByCode(String code) { return null; }
+            };
+        }
+
+        @Bean
+        public NotifyMessageService notifyMessageService(NotifyTemplateService notifyTemplateService,
+                                                         TemplateRenderService templateRenderService,
+                                                         LoginContextProvider loginContextProvider) {
+            return new NotifyMessageServiceImpl(notifyTemplateService, templateRenderService, loginContextProvider);
         }
 
         @Bean

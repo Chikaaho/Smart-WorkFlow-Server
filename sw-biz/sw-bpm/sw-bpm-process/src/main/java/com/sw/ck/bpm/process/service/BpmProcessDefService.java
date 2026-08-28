@@ -31,6 +31,19 @@ public interface BpmProcessDefService {
     BpmProcessDef createDef(String name, String formKey);
 
     /**
+     * 修改流程定义基础字段（仅 DRAFT 状态允许；PUBLISHED 抛业务异常）。
+     * <p>
+     * name / formKey 均可选（null 表示不修改）；formKey 变更时校验表单存在，
+     * 并同步更新 graph_json 中的 name / formKey，保持图与元数据一致。
+     *
+     * @param id        流程定义 ID
+     * @param name      新名称（可 null）
+     * @param formKey   新表单 formKey（可 null）
+     * @return 更新后的实体
+     */
+    BpmProcessDef updateDef(Long id, String name, String formKey);
+
+    /**
      * 保存草稿图 —— 无条件全量覆盖 graph_json，status 保持 DRAFT，不跑校验。
      *
      * @param id        流程定义 ID

@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * BPM 迁移链纳入真实 H2 全链 Flyway 验证的永久测试（不启动 Spring 上下文）。
  * <p>
- * 使用独立内存库 + 独立 Flyway 实例，7 个 locations 与 {@code application.yml}
+ * 使用独立内存库 + 独立 Flyway 实例，8 个 locations 与 {@code application.yml}
  * 完全一致（{vendor} 按 H2 连接解析为 h2）。全链共 35 条迁移
  * （含 V35 Agent Token Usage）。
  * </p>
@@ -43,7 +43,7 @@ class FlywayFullChainH2Test {
     private static final String PASSWORD = "";
 
     /**
-     * 与 application.yml flyway.locations 完全一致的 7 个位置。
+     * 与 application.yml flyway.locations 完全一致的 8 个位置。
      * <p>
      * 注意：{vendor} 占位符并非由 flyway-core 解析，而是 Spring Boot
      * {@code FlywayAutoConfiguration$LocationResolver} 按 JDBC 驱动替换
@@ -59,7 +59,8 @@ class FlywayFullChainH2Test {
             "classpath:db/migration/form/{vendor}",
             "classpath:db/migration/storage/{vendor}",
             "classpath:db/migration/job/{vendor}",
-            "classpath:db/migration/agent/{vendor}"
+            "classpath:db/migration/agent/{vendor}",
+            "classpath:db/migration/iot/{vendor}"
     };
 
     private static Flyway flyway;
@@ -75,15 +76,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(38, result.migrationsExecuted,
-                "全链迁移计数应为 38（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed、V38 消息模板），实际: " + result.migrationsExecuted);
+        assertEquals(41, result.migrationsExecuted,
+                "全链迁移计数应为 41（39 基线 + V40 IoT 设备/命令 + V41 表单 definition 列 H2 CLOB 修正），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 38 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37/V38")
+    @DisplayName("全链迁移后：info().applied() 共 41 条，包含 BPM V8/V14/P24 V31-V39、IoT V40、Form V41")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(38, applied.length, "已应用迁移数应为 38");
+        assertEquals(41, applied.length, "已应用迁移数应为 41");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -93,6 +94,7 @@ class FlywayFullChainH2Test {
         boolean v36Seen = false;
         boolean v37Seen = false;
         boolean v38Seen = false;
+        boolean v39Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -121,6 +123,9 @@ class FlywayFullChainH2Test {
             if ("38".equals(info.getVersion().getVersion())) {
                 v38Seen = true;
             }
+            if ("39".equals(info.getVersion().getVersion())) {
+                v39Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
@@ -131,6 +136,7 @@ class FlywayFullChainH2Test {
         assertTrue(v36Seen, "V36 调试会话应已应用");
         assertTrue(v37Seen, "V37 工具管理菜单 seed 应已应用");
         assertTrue(v38Seen, "V38 消息模板迁移应已应用");
+        assertTrue(v39Seen, "V39 批量发送权限迁移应已应用");
     }
 
     @Test
@@ -219,7 +225,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(6, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38 六条，实际: " + second.migrationsExecuted);
+        assertEquals(9, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V41 九条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -276,7 +282,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V33→V36 升级链应成功");
-        assertEquals(5, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38 五条，实际: " + second.migrationsExecuted);
+        assertEquals(8, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38/V39/V40/V41 八条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
@@ -465,7 +471,7 @@ class FlywayFullChainH2Test {
     // ==================== L10：独立 V36 起点 → 仅迁移 V37（D197 审查 L10） ====================
 
     @Test
-    @DisplayName("L10: 独立 V36 现有库 → 迁移至链尾（V37/V38），同一会话查询 sys_menu 页面/按钮行与 view/manage 权限")
+    @DisplayName("L10: 独立 V36 现有库 → 迁移至链尾（V37/V38/V39），同一会话查询批量发送页面/按钮权限")
     void upgrade_V36_to_V37_only_and_query() throws SQLException {
         String upgradeUrl = "jdbc:h2:mem:flyway_l10_v36;DB_CLOSE_DELAY=-1";
         String[] locations = Arrays.stream(APP_LOCATIONS)
@@ -489,17 +495,17 @@ class FlywayFullChainH2Test {
         assertEquals("36", beforeVersion, "起点当前版本应为 V36，实际: " + beforeVersion);
 
 
-        // 3. 只迁移到链尾（不再 target），应只执行 V37/V38 两条（P36 扩展：V38 消息模板）
+        // 3. 只迁移到链尾（不再 target），应执行 V37/V38/V39 三条
         Flyway toV37 = Flyway.configure()
                 .dataSource(upgradeUrl, USER, PASSWORD)
                 .locations(locations)
                 .load();
         MigrateResult second = toV37.migrate();
         assertTrue(second.success, "V36→链尾 应成功");
-        assertEquals(2, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38 两条，实际: " + second.migrationsExecuted);
+        assertEquals(5, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38/V39/V40/V41 五条，实际: " + second.migrationsExecuted);
         org.flywaydb.core.api.MigrationInfoService infoAfter = toV37.info();
         String afterVersion = infoAfter.current() == null ? "EMPTY" : infoAfter.current().getVersion().getVersion();
-        assertEquals("38", afterVersion, "终点当前版本应为 V38，实际: " + afterVersion);
+        assertEquals("41", afterVersion, "终点当前版本应为 V41，实际: " + afterVersion);
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
         // 4. 同一数据库会话实际查询：页面/按钮行的 id,parent_id,path,component,permission + view/manage
@@ -523,8 +529,32 @@ class FlywayFullChainH2Test {
                     "SELECT menu_type, component FROM sys_menu WHERE id = 6")) {
                 assertTrue(rs.next(), "V38 后「通知」目录 id=6 应存在");
                 assertEquals(0, rs.getInt("menu_type"), "id=6 应矫正为目录(menu_type=0)");
-                rs.getStatement().close();
             }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT id, parent_id, path, component, permission, menu_type FROM sys_menu WHERE id IN (218, 219) ORDER BY id")) {
+                assertTrue(rs.next(), "V39 批量发送页面菜单 id=218 应存在");
+                assertEquals(6, rs.getInt("parent_id"));
+                assertEquals("batch-send", rs.getString("path"));
+                assertEquals("notify/views/NotifyBatchSend", rs.getString("component"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertEquals(1, rs.getInt("menu_type"));
+                assertTrue(rs.next(), "V39 批量发送按钮菜单 id=219 应存在");
+                assertEquals(218, rs.getInt("parent_id"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertEquals(2, rs.getInt("menu_type"));
+                assertFalse(rs.next(), "批量发送权限资源不应多出第三行");
+            }
+            stmt.executeUpdate("INSERT INTO sys_role_menu (id, create_time, update_time, deleted, tenant_id, version, role_id, menu_id) VALUES (900001, current_timestamp, current_timestamp, 0, 0, 0, 2, 219)");
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT r.id, r.code, r.built_in, m.permission FROM sys_role_menu rm JOIN sys_role r ON r.id = rm.role_id JOIN sys_menu m ON m.id = rm.menu_id WHERE rm.role_id = 2 AND rm.menu_id = 219 AND rm.deleted = 0")) {
+                assertTrue(rs.next(), "普通 admin 角色应能绑定批量发送按钮权限");
+                assertEquals(2, rs.getInt("id"));
+                assertEquals("admin", rs.getString("code"));
+                assertFalse(rs.getBoolean("built_in"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertFalse(rs.next(), "普通角色绑定应只有一条有效关系");
+            }
+            System.out.println("[S3-production] H2 V39 menu=(218,batch-send,notify/views/NotifyBatchSend,notify:batch:send), button=(219,notify:batch:send), ordinaryRole=(id=2,code=admin,built_in=false) boundMenu=219, queryExit=0");
         }
 
         System.out.println("[L10] V36→链尾 独立升级: 起点=" + beforeVersion + ", 终点=" + afterVersion

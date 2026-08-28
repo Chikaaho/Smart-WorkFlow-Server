@@ -16,6 +16,7 @@ import java.sql.Statement;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -86,8 +87,8 @@ class FlywayFullChainPostgresTest {
                 .load()
                 .migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(38, result.migrationsExecuted,
-                "全链迁移计数应为 38（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed、V38 消息模板），实际: "
+        assertEquals(39, result.migrationsExecuted,
+                "全链迁移计数应为 39（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed、V38 消息模板、V39 批量发送权限），实际: "
                         + result.migrationsExecuted);
     }
 
@@ -99,10 +100,10 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 38 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37/V38")
+    @DisplayName("全链迁移后：info().applied() 共 39 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37/V38/V39")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway().info().applied();
-        assertEquals(38, applied.length, "已应用迁移数应为 38");
+        assertEquals(39, applied.length, "已应用迁移数应为 39");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -112,6 +113,7 @@ class FlywayFullChainPostgresTest {
         boolean v36Seen = false;
         boolean v37Seen = false;
         boolean v38Seen = false;
+        boolean v39Seen = false;
         for (org.flywaydb.core.api.MigrationInfo info : applied) {
             if ("8".equals(info.getVersion().getVersion())) {
                 v8Seen = true;
@@ -140,6 +142,9 @@ class FlywayFullChainPostgresTest {
             if ("38".equals(info.getVersion().getVersion())) {
                 v38Seen = true;
             }
+            if ("39".equals(info.getVersion().getVersion())) {
+                v39Seen = true;
+            }
         }
         assertTrue(v8Seen, "BPM V8 应已应用");
         assertTrue(v14Seen, "BPM V14 应已应用");
@@ -150,12 +155,46 @@ class FlywayFullChainPostgresTest {
         assertTrue(v36Seen, "V36 调试会话应已应用");
         assertTrue(v37Seen, "V37 工具管理菜单 seed 应已应用");
         assertTrue(v38Seen, "V38 消息模板迁移应已应用");
+        assertTrue(v39Seen, "V39 批量发送权限迁移应已应用");
     }
 
     @Test
     @DisplayName("全链迁移后：再次 validate() 通过（无校验和/缺失迁移问题）")
     void validate_shouldPass() {
         flyway().validate();
+    }
+
+    @Test
+    @DisplayName("S3：PostgreSQL 生产权限资源可查询并由普通角色绑定")
+    void notifyBatchPermissionResource_shouldBeQueryableAndBindable() throws SQLException {
+        try (Connection conn = DriverManager.getConnection(url, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT id, parent_id, path, component, permission, menu_type FROM sys_menu WHERE id IN (218, 219) ORDER BY id")) {
+                assertTrue(rs.next(), "V39 批量发送页面菜单 id=218 应存在");
+                assertEquals(6, rs.getInt("parent_id"));
+                assertEquals("batch-send", rs.getString("path"));
+                assertEquals("notify/views/NotifyBatchSend", rs.getString("component"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertEquals(1, rs.getInt("menu_type"));
+                assertTrue(rs.next(), "V39 批量发送按钮菜单 id=219 应存在");
+                assertEquals(218, rs.getInt("parent_id"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertEquals(2, rs.getInt("menu_type"));
+                assertFalse(rs.next(), "批量发送权限资源不应多出第三行");
+            }
+            stmt.executeUpdate("INSERT INTO sys_role_menu (id, create_time, update_time, deleted, tenant_id, version, role_id, menu_id) VALUES (900001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, 0, 2, 219)");
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT r.id, r.code, r.built_in, m.permission FROM sys_role_menu rm JOIN sys_role r ON r.id = rm.role_id JOIN sys_menu m ON m.id = rm.menu_id WHERE rm.role_id = 2 AND rm.menu_id = 219 AND rm.deleted = 0")) {
+                assertTrue(rs.next(), "普通 admin 角色应能绑定批量发送按钮权限");
+                assertEquals(2, rs.getInt("id"));
+                assertEquals("admin", rs.getString("code"));
+                assertFalse(rs.getBoolean("built_in"));
+                assertEquals("notify:batch:send", rs.getString("permission"));
+                assertFalse(rs.next(), "普通角色绑定应只有一条有效关系");
+            }
+            System.out.println("[S3-production] PostgreSQL V39 menu=(218,batch-send,notify/views/NotifyBatchSend,notify:batch:send), button=(219,notify:batch:send), ordinaryRole=(id=2,code=admin,built_in=false) boundMenu=219, queryExit=0");
+        }
     }
 
     @Test
@@ -238,7 +277,7 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33/V34/V35/V36/V37/V38（共 38），validate() 通过")
+    @DisplayName("既有库升级链：先 target(32) 迁移至 V32（32 条），再全量迁移只执行 V33/V34/V35/V36/V37/V38/V39（共 39），validate() 通过")
     void upgradeChain_V32_to_V35_shouldPass() throws SQLException {
         // 模拟既有库：在独立数据库中先迁移至 V32
         try (Connection conn = DriverManager.getConnection(url, USER, PASSWORD);
@@ -263,7 +302,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(6, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38 六条，实际: " + second.migrationsExecuted);
+        assertEquals(7, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39 七条，实际: " + second.migrationsExecuted);
         full.validate();
     }
 
@@ -287,7 +326,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult first = migrate.migrate();
         assertTrue(first.success, "建立既有库应成功");
-        assertEquals(38, first.migrationsExecuted, "既有库应含全部 38 条，实际: " + first.migrationsExecuted);
+        assertEquals(39, first.migrationsExecuted, "既有库应含全部 39 条，实际: " + first.migrationsExecuted);
 
         // 原始 V13 的 L58 内容（修改前）：DROP INDEX IF EXISTS sw_form_def_form_key_key;
         String originalV13Line = "DROP INDEX IF EXISTS sw_form_def_form_key_key;";

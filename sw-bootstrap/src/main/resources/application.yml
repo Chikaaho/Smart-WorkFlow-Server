@@ -58,6 +58,7 @@ spring:
       - classpath:db/migration/storage/{vendor}
       - classpath:db/migration/job/{vendor}
       - classpath:db/migration/agent/{vendor}
+      - classpath:db/migration/iot/{vendor}
     baseline-on-migrate: true
     validate-on-migrate: true
     out-of-order: false

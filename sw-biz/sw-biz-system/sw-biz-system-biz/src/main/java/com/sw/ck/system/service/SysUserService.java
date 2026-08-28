@@ -61,4 +61,12 @@ public interface SysUserService extends BaseService<SysUser> {
     List<Long> listPostIds(Long userId);
 
     void updatePostIds(Long userId, List<Long> postIds);
+
+    /**
+     * 仅修改用户密码（自助改密链路）。
+     *
+     * @param userId        用户 ID
+     * @param plainPassword 新明文密码（调用方已完成旧密码校验）
+     */
+    void updatePassword(Long userId, String plainPassword);
 }

@@ -1,6 +1,7 @@
 package com.sw.ck.bpm.process.controller;
 
 import com.sw.ck.bpm.api.dto.BpmTaskDTO;
+import com.sw.ck.bpm.api.event.BpmDeviceCommandEvent;
 import com.sw.ck.bpm.api.event.BpmNotifyEvent;
 import com.sw.ck.bpm.api.event.BpmNotifyTrigger;
 import com.sw.ck.bpm.api.facade.BpmTaskFacade;
@@ -153,6 +154,12 @@ public class BpmTodoController {
 
         String processInstanceId = task.getProcessInstanceId();
 
+        // 2.5 流程结束前读取设备透传变量（实例结束后 Runtime 变量不可查）
+        String productId = asString(bpmTaskFacade.getVariable(processInstanceId, "productId"));
+        String deviceName = asString(bpmTaskFacade.getVariable(processInstanceId, "deviceName"));
+        String commandKey = asString(bpmTaskFacade.getVariable(processInstanceId, "commandKey"));
+        String commandType = asString(bpmTaskFacade.getVariable(processInstanceId, "commandType"));
+
         // 3. 完成审批（经 Facade）
         bpmTaskFacade.complete(taskId, null);
         log.info("审批已完成: taskId={}, processInstanceId={}, userId={}",
@@ -167,9 +174,33 @@ public class BpmTodoController {
 
             // — 发布 PROCESS_APPROVED 通知事件 —
             publishApprovedEvent(processInstanceId, loginUser);
+
+            // — 审批结果驱动设备：流程变量携带 productId/deviceName/commandKey 时发布设备命令事件 —
+            if (productId != null && deviceName != null && commandKey != null) {
+                if (commandType == null) {
+                    commandType = "PROPERTY";
+                }
+                domainEventPublisher.publish(new BpmDeviceCommandEvent(
+                        processInstanceId, productId, deviceName,
+                        commandKey, commandType,
+                        loginUser.getTenantId(), loginUser.getUserId()));
+                log.info("设备命令事件已发布: processInstanceId={}, productId={}, deviceName={}, commandKey={}",
+                        processInstanceId, productId, deviceName, commandKey);
+            }
         }
 
         return R.ok();
+    }
+
+    /**
+     * 流程变量取值转字符串（null 或空白返回 null）。
+     */
+    private String asString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String s = String.valueOf(value).trim();
+        return s.isEmpty() ? null : s;
     }
 
     /**

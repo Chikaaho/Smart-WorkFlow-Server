@@ -5,6 +5,7 @@ import com.sw.ck.notify.dto.NotifyTemplateDTO;
 import com.sw.ck.notify.dto.NotifyTemplateQuery;
 import com.sw.ck.notify.dto.TemplatePreviewRequest;
 import com.sw.ck.notify.dto.TemplatePreviewResult;
+import com.sw.ck.notify.entity.NotifyTemplate;
 
 import java.util.Map;
 import java.util.Set;
@@ -56,4 +57,9 @@ public interface NotifyTemplateService {
 
     /** 提取模板引用的变量名集（前端动态生成变量输入用） */
     Set<String> extractVariables(String titleTemplate, String contentTemplate);
+
+    /**
+     * 按code查询已启用的模板。未找到或已停用返回null。
+     */
+    NotifyTemplate getEnabledByCode(String code);
 }

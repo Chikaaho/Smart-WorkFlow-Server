@@ -64,6 +64,25 @@ public class BpmProcessDefController {
     }
 
     /**
+     * 修改流程定义（仅 DRAFT 状态允许）。
+     * <p>
+     * name / formKey 均可选（null 表示不修改）；formKey 变更时校验表单存在。
+     *
+     * @param id      流程定义 ID
+     * @param request 修改请求
+     * @return 更新后的图（含同步后的 name / formKey）
+     */
+    @Transactional
+    @PutMapping("/{id}")
+    public R<ProcessGraph> updateDef(@PathVariable Long id,
+                                     @RequestBody UpdateProcessDefRequest request) {
+        bpmProcessDefService.updateDef(id, request.getName(), request.getFormKey());
+        BpmProcessDef entity = bpmProcessDefService.getDef(id);
+        log.info("流程定义已修改: id={}, name={}, formKey={}", id, entity.getName(), entity.getFormKey());
+        return R.ok(parseGraph(entity.getGraphJson()));
+    }
+
+    /**
      * 保存草稿图 —— 无条件全量覆盖 graph_json。
      * <p>
      * status 保持 DRAFT，不跑校验拦截（允许存残图）。

@@ -168,4 +168,14 @@ public class SysUserServiceImpl
         sysUserPostMapper.delete(Wrappers.lambdaQuery(SysUserPost.class).eq(SysUserPost::getUserId, userId));
         valid.forEach(postId -> { SysUserPost r = new SysUserPost(); r.setUserId(userId); r.setPostId(postId); sysUserPostMapper.insert(r); });
     }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updatePassword(Long userId, String plainPassword) {
+        Objects.requireNonNull(plainPassword, "密码不能为空");
+        SysUser user = new SysUser();
+        user.setId(userId);
+        user.setPassword(passwordEncoder.encode(plainPassword));
+        updateById(user);
+    }
 }

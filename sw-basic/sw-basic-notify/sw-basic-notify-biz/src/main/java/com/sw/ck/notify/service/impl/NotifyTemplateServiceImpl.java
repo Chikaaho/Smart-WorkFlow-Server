@@ -141,6 +141,13 @@ public class NotifyTemplateServiceImpl implements NotifyTemplateService {
         return names;
     }
 
+    @Override
+    public NotifyTemplate getEnabledByCode(String code) {
+        return templateMapper.selectOne(Wrappers.<NotifyTemplate>lambdaQuery()
+                .eq(NotifyTemplate::getTemplateCode, code)
+                .eq(NotifyTemplate::getEnabled, 1));
+    }
+
     // ==================== 内部 ====================
 
     /** 供发送链路复用：按代码取启用模板，停用/删除/不存在一律 NOT_FOUND 语义拒绝 */

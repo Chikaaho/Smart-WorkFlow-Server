@@ -59,10 +59,15 @@ public class BpmDeployFacadeImpl implements BpmDeployFacade {
     @Override
     public BpmDeployResult deployModel(byte[] bpmnXml, String deploymentName) {
         try {
-            Deployment deployment = repositoryService.createDeployment()
+            var deploymentBuilder = repositoryService.createDeployment()
                     .addBytes("process.bpmn20.xml", bpmnXml)
-                    .name(deploymentName)
-                    .deploy();
+                    .name(deploymentName);
+            // 部署跟随发布者租户：发起/待办查询均按 tenantId 过滤，定义无租户会导致实例发起失败
+            com.sw.ck.security.holder.LoginUser loginUser = com.sw.ck.security.holder.LoginUserHolder.get();
+            if (loginUser != null && loginUser.getTenantId() != null) {
+                deploymentBuilder.tenantId(String.valueOf(loginUser.getTenantId()));
+            }
+            Deployment deployment = deploymentBuilder.deploy();
 
             // 查询部署中的流程定义（首个）
             ProcessDefinition processDef = repositoryService.createProcessDefinitionQuery()

@@ -118,6 +118,11 @@ public class ProcessStartService {
         variables.put("submitter", String.valueOf(cmd.getSubmitter()));
         variables.put("tenantId", cmd.getTenantId());
 
+        // 设备控制透传：表单数据若携带 device_key/deviceKey、command_key/commandKey，
+        // 透传为流程变量，供审批通过后下发设备命令（无则跳过，不影响普通审批流）
+        putFirstNotBlank(variables, "deviceKey", cmd.getSubmittedData(), "device_key", "deviceKey");
+        putFirstNotBlank(variables, "commandKey", cmd.getSubmittedData(), "command_key", "commandKey");
+
         // 原: runtimeService.startProcessInstanceByKeyAndTenantId(...)
         // → bpmRuntimeFacade.startProcess(...)
         String processInstanceId = bpmRuntimeFacade.startProcess(
@@ -144,6 +149,24 @@ public class ProcessStartService {
 
         // 5. 发布 TODO_CREATED 通知事件（查询刚创建的 task）
         publishTodoCreatedEvent(processInstanceId, cmd);
+    }
+
+    /**
+     * 从表单提交数据中按候选键提取首个非空值放入流程变量
+     *（动态宽表物理列为蛇形命名，同时兼容驼峰入参）。
+     */
+    private void putFirstNotBlank(Map<String, Object> variables, String targetKey,
+                                  Map<String, Object> submittedData, String... candidateKeys) {
+        if (submittedData == null) {
+            return;
+        }
+        for (String key : candidateKeys) {
+            Object value = submittedData.get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                variables.put(targetKey, String.valueOf(value));
+                return;
+            }
+        }
     }
 
     /**

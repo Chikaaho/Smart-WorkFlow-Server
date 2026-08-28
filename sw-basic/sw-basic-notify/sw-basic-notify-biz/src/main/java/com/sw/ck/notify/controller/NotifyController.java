@@ -3,12 +3,15 @@ package com.sw.ck.notify.controller;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
 import com.sw.ck.common.response.R;
+import com.sw.ck.notify.dto.NotifyBatchSendReq;
+import com.sw.ck.notify.dto.NotifyBatchSendResp;
 import com.sw.ck.notify.entity.NotifyMessage;
 import com.sw.ck.notify.service.NotifyMessageService;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -141,5 +144,33 @@ public class NotifyController {
         log.debug("通知已删除: id={}, recipientId={}", id, currentUserId);
 
         return R.ok();
+    }
+
+    /**
+     * 批量发送站内通知。
+     * <p>
+     * 支持按用户ID、部门ID、角色code组合选择接收对象，服务端去重后统一投递。
+     * 直接内容模式（title+content）与模板模式（templateCode+variables）互斥。
+     * 零有效接收人或超过500人上限时整体拒绝。
+     * </p>
+     */
+    @PostMapping("/batch-send")
+    @PreAuthorize("@ss.hasPermi('notify:batch:send')")
+    public R<NotifyBatchSendResp> batchSend(@RequestBody NotifyBatchSendReq req) {
+        int count = notifyMessageService.batchSend(req);
+        return R.ok(new NotifyBatchSendResp(count));
+    }
+
+    /**
+     * 解析批量发送接收人数（去重后、不含实际发送）。
+     * <p>
+     * 供前端二次确认前展示服务端计算的最终人数。权限与发送端点一致。
+     * </p>
+     */
+    @PostMapping("/resolve-count")
+    @PreAuthorize("@ss.hasPermi('notify:batch:send')")
+    public R<NotifyBatchSendResp> resolveCount(@RequestBody NotifyBatchSendReq req) {
+        int count = notifyMessageService.resolveCount(req);
+        return R.ok(new NotifyBatchSendResp(count));
     }
 }

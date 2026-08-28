@@ -177,6 +177,34 @@ public class AuthController {
     }
 
     /**
+     * 修改当前登录用户自己的密码。
+     * <p>
+     * 校验旧密码 → BCrypt 加密新密码 → 落库 → 踢出该用户缓存
+     *（下次请求需重新登录，符合"刷新 = 重登录"语义）。
+     *
+     * @param request 修改密码请求（oldPassword + newPassword）
+     * @return 成功返回 R.ok
+     */
+    @PostMapping("/password")
+    public R<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        LoginUser current = LoginUserHolder.get();
+        if (current == null) {
+            return R.fail(401, "未登录");
+        }
+        SysUser user = sysUserService.getById(current.getUserId());
+        if (user == null) {
+            return R.fail(401, "用户不存在");
+        }
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
+            return R.fail(400, "旧密码错误");
+        }
+        sysUserService.updatePassword(user.getId(), request.getNewPassword());
+        loginUserLoader.kickOut(user.getId());
+        log.info("用户 {} 已修改密码, userId={}", user.getUsername(), user.getId());
+        return R.ok();
+    }
+
+    /**
      * 账号状态校验提示。
      * <p>
      * status=0（正常）→ 返回 null（放行）；status=2（锁定）→ "账号已锁定"；
@@ -201,5 +229,15 @@ public class AuthController {
 
         @NotBlank(message = "密码不能为空")
         private String password;
+    }
+
+    @Data
+    public static class ChangePasswordRequest {
+
+        @NotBlank(message = "旧密码不能为空")
+        private String oldPassword;
+
+        @NotBlank(message = "新密码不能为空")
+        private String newPassword;
     }
 }

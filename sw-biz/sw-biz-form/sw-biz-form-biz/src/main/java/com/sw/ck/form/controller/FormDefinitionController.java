@@ -58,6 +58,16 @@ public class FormDefinitionController {
     }
 
     /**
+     * 删除表单草稿（仅 DRAFT 状态允许，已发布表单禁止删除）。
+     */
+    @DeleteMapping("/{id}")
+    public R<Void> deleteDraft(@PathVariable("id") String id) {
+        log.info("Deleting form draft: id={}", id);
+        formDefService.deleteDraft(id);
+        return R.ok();
+    }
+
+    /**
      * 保存表单配置（definition JSON）。
      */
     @PostMapping("/{id}/config")

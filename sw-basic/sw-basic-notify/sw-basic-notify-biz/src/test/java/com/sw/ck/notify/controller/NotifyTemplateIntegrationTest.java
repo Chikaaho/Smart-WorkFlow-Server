@@ -12,6 +12,7 @@ import com.sw.ck.common.config.mybatis.tenant.CommonTenantLineHandler;
 import com.sw.ck.common.config.mybatis.tenant.TenantProperties;
 import com.sw.ck.common.datascope.DataScopeType;
 import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.security.LoginContextProvider;
 import com.sw.ck.notify.api.NotifyBizType;
 import com.sw.ck.notify.api.SendNotifyCommand;
@@ -668,11 +669,6 @@ class NotifyTemplateIntegrationTest {
         }
 
         @Bean
-        public NotifyMessageService notifyMessageService() {
-            return new NotifyMessageServiceImpl();
-        }
-
-        @Bean
         public TemplateRenderService templateRenderService() {
             return new TemplateRenderService();
         }
@@ -682,6 +678,13 @@ class NotifyTemplateIntegrationTest {
                                                                    TemplateRenderService renderService) {
             // NotifyTemplateMapper 由 @MapperScan 注册，构造注入即可
             return new NotifyTemplateServiceImpl(mapper, renderService);
+        }
+
+        @Bean
+        public NotifyMessageService notifyMessageService(NotifyTemplateServiceImpl notifyTemplateServiceImpl,
+                                                         TemplateRenderService templateRenderService,
+                                                         LoginContextProvider loginContextProvider) {
+            return new NotifyMessageServiceImpl(notifyTemplateServiceImpl, templateRenderService, loginContextProvider);
         }
 
         @Bean

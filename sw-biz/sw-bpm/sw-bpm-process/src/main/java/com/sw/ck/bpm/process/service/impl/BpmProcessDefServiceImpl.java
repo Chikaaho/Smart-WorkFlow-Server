@@ -10,8 +10,10 @@ import com.sw.ck.bpm.api.dto.GraphValidationError;
 import com.sw.ck.bpm.api.dto.ProcessGraph;
 import com.sw.ck.bpm.api.exception.BpmErrorCode;
 import com.sw.ck.bpm.api.facade.BpmDeployFacade;
+import com.sw.ck.bpm.process.entity.BpmFormBinding;
 import com.sw.ck.bpm.process.entity.BpmProcessDef;
 import com.sw.ck.bpm.process.mapper.BpmProcessDefMapper;
+import com.sw.ck.bpm.process.service.BpmFormBindingService;
 import com.sw.ck.bpm.process.service.BpmProcessDefService;
 import com.sw.ck.bpm.process.validator.GraphValidator;
 import com.sw.ck.common.exception.BaseException;
@@ -42,17 +44,20 @@ public class BpmProcessDefServiceImpl implements BpmProcessDefService {
     private final GraphValidator graphValidator;
     private final FormDefinitionService formDefinitionService;
     private final BpmDeployFacade bpmDeployFacade;
+    private final BpmFormBindingService formBindingService;
     private final ObjectMapper objectMapper;
 
     public BpmProcessDefServiceImpl(BpmProcessDefMapper mapper,
                                     GraphValidator graphValidator,
                                     FormDefinitionService formDefinitionService,
                                     BpmDeployFacade bpmDeployFacade,
+                                    BpmFormBindingService formBindingService,
                                     ObjectMapper objectMapper) {
         this.mapper = mapper;
         this.graphValidator = graphValidator;
         this.formDefinitionService = formDefinitionService;
         this.bpmDeployFacade = bpmDeployFacade;
+        this.formBindingService = formBindingService;
         this.objectMapper = objectMapper;
     }
 
@@ -87,6 +92,43 @@ public class BpmProcessDefServiceImpl implements BpmProcessDefService {
 
         mapper.insert(entity);
         log.info("Created process def: id={}, processKey={}", entity.getId(), processKey);
+        return entity;
+    }
+
+    @Override
+    @Transactional
+    public BpmProcessDef updateDef(Long id, String name, String formKey) {
+        BpmProcessDef entity = getExisting(id);
+        if (!STATUS_DRAFT.equals(entity.getStatus())) {
+            throw new BaseException(BpmErrorCode.PROCESS_DEF_PUBLISHED);
+        }
+        boolean changed = false;
+        if (name != null && !name.isBlank() && !name.equals(entity.getName())) {
+            entity.setName(name);
+            changed = true;
+        }
+        if (formKey != null && !formKey.isBlank() && !formKey.equals(entity.getFormKey())) {
+            if (!formDefinitionService.formExists(formKey)) {
+                throw new BaseException(BpmErrorCode.GRAPH_FORM_NOT_FOUND);
+            }
+            entity.setFormKey(formKey);
+            changed = true;
+        }
+        if (changed) {
+            // 同步图内冗余的 name / formKey，保持元数据一致
+            ProcessGraph graph = parseGraph(entity.getGraphJson());
+            if (graph != null) {
+                if (entity.getName() != null) {
+                    graph.setName(entity.getName());
+                }
+                if (entity.getFormKey() != null) {
+                    graph.setFormKey(entity.getFormKey());
+                }
+                entity.setGraphJson(toJson(graph));
+            }
+            mapper.updateById(entity);
+            log.info("Updated process def: id={}, name={}, formKey={}", id, entity.getName(), entity.getFormKey());
+        }
         return entity;
     }
 
@@ -217,6 +259,21 @@ public class BpmProcessDefServiceImpl implements BpmProcessDefService {
         def.setProcessDefinitionId(deployResult.getProcessDefinitionId());
         def.setStatus(STATUS_PUBLISHED);
         mapper.updateById(def);
+
+        // 发布成功 → 落启用表单绑定（表单提交事件按 formKey 找到该流程发起实例）
+        if (formKey != null && !formKey.isBlank()) {
+            formBindingService.lambdaUpdate()
+                    .eq(BpmFormBinding::getFormKey, formKey)
+                    .eq(BpmFormBinding::getActive, Boolean.TRUE)
+                    .set(BpmFormBinding::getActive, Boolean.FALSE)
+                    .update();
+            BpmFormBinding binding = new BpmFormBinding();
+            binding.setFormKey(formKey);
+            binding.setProcessDefKey(newProcessKey);
+            binding.setActive(Boolean.TRUE);
+            formBindingService.save(binding);
+            log.info("Form binding activated: formKey={} -> processDefKey={}", formKey, newProcessKey);
+        }
 
         log.info("Process def published: id={}, processKey={}, deploymentId={}, processDefinitionId={}",
                 id, newProcessKey, deployResult.getDeploymentId(), deployResult.getProcessDefinitionId());

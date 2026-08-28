@@ -326,6 +326,21 @@ public class FormDefServiceImpl implements FormDefService {
         return formDefMapper.selectById(id);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteDraft(String id) {
+        FormDefEntity entity = formDefMapper.selectById(id);
+        if (entity == null) {
+            throw new BaseException(FormErrorCode.FORM_NOT_FOUND);
+        }
+        if (!"DRAFT".equals(entity.getStatus())) {
+            throw new BaseException(FormErrorCode.FORM_ALREADY_PUBLISHED.getCode(),
+                    "已发布表单不能删除");
+        }
+        formDefMapper.deleteById(id);
+        log.info("Form draft deleted: id={}", id);
+    }
+
     // ==================== 内部方法 ====================
 
     private FormDefDTO toDTO(FormDefEntity entity) {

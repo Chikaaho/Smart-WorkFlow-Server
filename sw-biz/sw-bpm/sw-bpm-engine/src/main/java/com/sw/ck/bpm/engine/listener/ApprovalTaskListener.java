@@ -57,6 +57,7 @@ public class ApprovalTaskListener implements TaskListener {
     private final ObjectMapper objectMapper;
 
     public ApprovalTaskListener(RepositoryService repositoryService,
+                                @org.springframework.beans.factory.annotation.Qualifier("approverResolverMap")
                                 Map<String, NodeApproverResolver> resolverMap,
                                 ObjectMapper objectMapper) {
         this.repositoryService = repositoryService;

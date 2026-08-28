@@ -108,4 +108,13 @@ public interface FormDefService {
      * 根据 ID 获取表单定义实体。
      */
     FormDefEntity getById(String id);
+
+    /**
+     * 删除表单草稿（逻辑删除，仅 DRAFT 状态允许）。
+     * <p>
+     * 已发布表单已建物理宽表，禁止删除；需删除时先走后续的独立下线流程。
+     *
+     * @param id 表单 ID
+     */
+    void deleteDraft(String id);
 }
