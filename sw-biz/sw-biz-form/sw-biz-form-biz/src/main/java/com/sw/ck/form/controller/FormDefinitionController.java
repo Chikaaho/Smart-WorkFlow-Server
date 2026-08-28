@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.*;
  * </p>
  */
 @RestController
-@RequestMapping("/api/form/def")
+@RequestMapping("/form/def")
 public class FormDefinitionController {
 
     private static final Logger log = LoggerFactory.getLogger(FormDefinitionController.class);

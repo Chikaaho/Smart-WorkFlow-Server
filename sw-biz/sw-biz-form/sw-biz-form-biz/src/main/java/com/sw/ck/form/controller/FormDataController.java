@@ -22,7 +22,7 @@ import java.util.Map;
  * </p>
  */
 @RestController
-@RequestMapping("/api/form/data")
+@RequestMapping("/form/data")
 public class FormDataController {
 
     private static final Logger log = LoggerFactory.getLogger(FormDataController.class);

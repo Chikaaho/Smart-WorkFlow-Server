@@ -61,7 +61,8 @@ class FlywayFullChainPostgresTest {
             "classpath:db/migration/form/{vendor}",
             "classpath:db/migration/storage/{vendor}",
             "classpath:db/migration/job/{vendor}",
-            "classpath:db/migration/agent/{vendor}"
+            "classpath:db/migration/agent/{vendor}",
+            "classpath:db/migration/iot/{vendor}"
     };
 
     /** zonky initdb 使用 -A trust -U postgres，任意密码均可通过。 */
@@ -87,8 +88,8 @@ class FlywayFullChainPostgresTest {
                 .load()
                 .migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(39, result.migrationsExecuted,
-                "全链迁移计数应为 39（含 V32 用户岗位、V33 大模型菜单 seed、V34 用户组、V35 Token Usage、V36 调试会话、V37 工具管理菜单 seed、V38 消息模板、V39 批量发送权限），实际: "
+        assertEquals(42, result.migrationsExecuted,
+                "全链迁移计数应为 42（39 基线 + V40 IoT 设备/命令 + V42 IoT 设备身份升级 + V43 表单数据导入导出权限），实际: "
                         + result.migrationsExecuted);
     }
 
@@ -100,10 +101,10 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 39 条，包含 BPM V8/V14/P24 V31/V32/V33/V34/V35/V36/V37/V38/V39")
+    @DisplayName("全链迁移后：info().applied() 共 42 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V43")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway().info().applied();
-        assertEquals(39, applied.length, "已应用迁移数应为 39");
+        assertEquals(42, applied.length, "已应用迁移数应为 42");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -302,7 +303,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(7, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39 七条，实际: " + second.migrationsExecuted);
+        assertEquals(10, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V42/V43 十条，实际: " + second.migrationsExecuted);
         full.validate();
     }
 
@@ -326,7 +327,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult first = migrate.migrate();
         assertTrue(first.success, "建立既有库应成功");
-        assertEquals(39, first.migrationsExecuted, "既有库应含全部 39 条，实际: " + first.migrationsExecuted);
+        assertEquals(42, first.migrationsExecuted, "既有库应含全部 42 条，实际: " + first.migrationsExecuted);
 
         // 原始 V13 的 L58 内容（修改前）：DROP INDEX IF EXISTS sw_form_def_form_key_key;
         String originalV13Line = "DROP INDEX IF EXISTS sw_form_def_form_key_key;";

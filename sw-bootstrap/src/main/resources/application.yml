@@ -8,6 +8,14 @@ server:
 
 spring:
   application:
+    # ======================== 文件上传（P32 导入） ========================
+    # multipart 层上限略高于业务上限（FormImportExportService.MAX_IMPORT_FILE_BYTES = 5MB），
+    # 使业务层能以结构化错误（1499）拒绝超限文件；超过 6MB 由容器层直接拒绝。
+  servlet:
+    multipart:
+      max-file-size: 6MB
+      max-request-size: 6MB
+
     name: smart-workflow
 
   profiles:

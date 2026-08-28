@@ -63,8 +63,8 @@ ALTER TABLE sw_iot_device_command ADD COLUMN client_token VARCHAR(128);
 -- 新增 device_output 字段（设备输出参数）
 ALTER TABLE sw_iot_device_command ADD COLUMN device_output TEXT;
 
--- 创建幂等键唯一索引
-CREATE UNIQUE INDEX IF NOT EXISTS uk_iot_command_idempotent ON sw_iot_device_command (idempotent_key) WHERE idempotent_key IS NOT NULL;
+-- 创建幂等键唯一索引（H2 不支持 WHERE 子句，使用普通唯一索引）
+CREATE UNIQUE INDEX IF NOT EXISTS uk_iot_command_idempotent ON sw_iot_device_command (idempotent_key);
 
 -- 创建按设备查询待发送命令的索引
 CREATE INDEX IF NOT EXISTS idx_iot_command_status_device ON sw_iot_device_command (product_id, device_name, status);

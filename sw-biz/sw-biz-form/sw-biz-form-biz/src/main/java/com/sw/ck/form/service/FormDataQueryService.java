@@ -3,6 +3,7 @@ package com.sw.ck.form.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sw.ck.common.datascope.DataScopeFilter;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.form.api.dto.FilterOp;
@@ -112,7 +113,35 @@ public class FormDataQueryService {
      * @param request 查询请求（分页 + 过滤条件）
      * @return 分页结果
      */
+    /**
+     * 查询表单数据（分页 + 过滤），附带数据范围过滤（导出等有界消费方使用）。
+     * <p>scopeFilter 为 none 时不追加条件；否则对 create_by 追加：
+     * SELF → 等值；DEPT 家族 → create_by IN (SELECT id FROM sys_user WHERE dept_id IN (...))；
+     * 空部门集 → 恒假（1 = 0）。</p>
+     */
+    public PageResult<Map<String, Object>> queryFormData(String formKey, FormDataQueryRequest request,
+                                                         DataScopeFilter scopeFilter) {
+        return doQueryFormData(formKey, request, scopeFilter, MAX_PAGE_SIZE);
+    }
+
+    /**
+     * 查询表单数据（分页 + 过滤），并允许调用方指定更大的单页上限（导出等有界消费方）。
+     * <p>maxPageSize 仍为硬上限：请求超过该值时被钳制到该值。</p>
+     */
+    public PageResult<Map<String, Object>> queryFormData(String formKey, FormDataQueryRequest request,
+                                                         DataScopeFilter scopeFilter, int maxPageSize) {
+        return doQueryFormData(formKey, request, scopeFilter, maxPageSize);
+    }
+
+    /**
+     * 查询表单数据（分页 + 过滤），不做额外数据范围过滤（保持既有语义，租户边界恒生效）。
+     */
     public PageResult<Map<String, Object>> queryFormData(String formKey, FormDataQueryRequest request) {
+        return doQueryFormData(formKey, request, null, MAX_PAGE_SIZE);
+    }
+
+    private PageResult<Map<String, Object>> doQueryFormData(String formKey, FormDataQueryRequest request,
+                                                            DataScopeFilter scopeFilter, int maxPageSize) {
         // —— Step 1: 获取当前用户 ——
         LoginUser loginUser = LoginUserHolder.get();
         if (loginUser == null) {
@@ -147,7 +176,7 @@ public class FormDataQueryService {
 
         // —— Step 6: 钳制分页参数 ——
         int page = Math.max(1, (int) request.getPageNum());
-        int size = clampSize((int) request.getPageSize());
+        int size = clampSize((int) request.getPageSize(), maxPageSize);
         int offset = (page - 1) * size;
 
         // —— Step 7: 构建 WHERE 子句 ——
@@ -157,6 +186,26 @@ public class FormDataQueryService {
         whereBuilder.append("\"deleted\" = 0");
         whereBuilder.append(" AND \"tenant_id\" = ?");
         filterParams.add(tenantId);
+
+        // —— 数据范围过滤（create_by 归属语义，对齐 DataScopeFilter） ——
+        if (scopeFilter != null) {
+            if (scopeFilter.isAlwaysFalse()) {
+                whereBuilder.append(" AND 1 = 0");
+            } else if (scopeFilter.getUserId() != null) {
+                whereBuilder.append(" AND \"create_by\" = ?");
+                filterParams.add(scopeFilter.getUserId());
+            } else if (scopeFilter.getDeptIds() != null) {
+                List<Long> deptIds = scopeFilter.getDeptIds();
+                if (deptIds.isEmpty()) {
+                    whereBuilder.append(" AND 1 = 0");
+                } else {
+                    String placeholders = deptIds.stream().map(d -> "?").collect(Collectors.joining(", "));
+                    whereBuilder.append(" AND \"create_by\" IN (SELECT id FROM sys_user WHERE dept_id IN (")
+                            .append(placeholders).append("))");
+                    filterParams.addAll(deptIds);
+                }
+            }
+        }
 
         for (FilterClause clause : clauses) {
             whereBuilder.append(" AND ").append(clause.sql());
@@ -613,9 +662,10 @@ public class FormDataQueryService {
 
     // ==================== 分页参数钳制 ====================
 
-    private int clampSize(int size) {
-        if (size < 1) return DEFAULT_PAGE_SIZE;
-        return Math.min(size, MAX_PAGE_SIZE);
+    private int clampSize(int size, int maxPageSize) {
+        int cap = Math.max(1, maxPageSize);
+        if (size < 1) return Math.min(DEFAULT_PAGE_SIZE, cap);
+        return Math.min(size, cap);
     }
 
     // ==================== 详情查询辅助 ====================

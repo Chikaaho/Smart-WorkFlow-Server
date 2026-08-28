@@ -55,7 +55,7 @@ class FormSubmitControllerTest {
     // ==================== Happy path ====================
 
     @Test
-    @DisplayName("POST /api/form/data/{formKey} → 提交成功 → R.ok(recordId)")
+    @DisplayName("POST /form/data/{formKey} → 提交成功 → R.ok(recordId)")
     void submitData_happyPath_shouldReturnRecordId() throws Exception {
         String formKey = "test_form";
         Map<String, Object> requestBody = Map.of("name", "张三", "age", 25);
@@ -64,7 +64,7 @@ class FormSubmitControllerTest {
         when(formSubmitService.submitForm(eq(formKey), any(), any(), any(), any()))
                 .thenReturn(expectedRecordId);
 
-        mockMvc.perform(post("/api/form/data/{formKey}", formKey)
+        mockMvc.perform(post("/form/data/{formKey}", formKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(requestBody)))
                 .andExpect(status().isOk())
@@ -83,7 +83,7 @@ class FormSubmitControllerTest {
         when(formSubmitService.submitForm(eq(formKey), any(), any(), any(), any()))
                 .thenThrow(new BaseException(FormErrorCode.SUBMIT_FIELD_REQUIRED, "必填字段 'name' 缺失"));
 
-        mockMvc.perform(post("/api/form/data/{formKey}", formKey)
+        mockMvc.perform(post("/form/data/{formKey}", formKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(requestBody)))
                 .andExpect(status().isOk())
@@ -100,7 +100,7 @@ class FormSubmitControllerTest {
         when(formSubmitService.submitForm(eq(formKey), any(), any(), any(), any()))
                 .thenThrow(new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH, "字段 'age' 需要数字类型"));
 
-        mockMvc.perform(post("/api/form/data/{formKey}", formKey)
+        mockMvc.perform(post("/form/data/{formKey}", formKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(requestBody)))
                 .andExpect(status().isOk())
@@ -117,7 +117,7 @@ class FormSubmitControllerTest {
         when(formSubmitService.submitForm(eq(formKey), any(), any(), any(), any()))
                 .thenThrow(new BaseException(FormErrorCode.SUBMIT_FIELD_UNKNOWN, "提交了未定义的字段 'unknown'"));
 
-        mockMvc.perform(post("/api/form/data/{formKey}", formKey)
+        mockMvc.perform(post("/form/data/{formKey}", formKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(requestBody)))
                 .andExpect(status().isOk())

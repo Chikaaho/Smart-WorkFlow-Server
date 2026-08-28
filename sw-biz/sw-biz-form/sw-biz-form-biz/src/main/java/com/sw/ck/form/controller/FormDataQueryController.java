@@ -17,7 +17,7 @@ import java.util.Map;
  * 鉴权走现有 Filter 链；租户/用户上下文取自 LoginUserHolder，端点不重复取 token。</p>
  */
 @RestController
-@RequestMapping("/api/form/data")
+@RequestMapping("/form/data")
 public class FormDataQueryController {
 
     private static final Logger log = LoggerFactory.getLogger(FormDataQueryController.class);

@@ -96,7 +96,9 @@ public class FormFieldValidator {
                             String subName = sub.has("name") ? sub.get("name").asText() : null;
                             if (subName == null) continue;
                             String subType = sub.has("type") ? sub.get("type").asText() : "TEXT";
-                            subFields.add(new FieldDef(subName, subType, false, null, null));
+                            boolean subRequired = sub.has("required") && sub.get("required").asBoolean();
+                            String subDictType = sub.has("dictType") ? sub.get("dictType").asText() : null;
+                            subFields.add(new FieldDef(subName, subType, subRequired, subDictType, null));
                         }
                     }
                 }
@@ -158,12 +160,53 @@ public class FormFieldValidator {
                 }
             }
 
+            // —— TABLE 子行校验：每行子字段必填/类型与主字段同口径 ——
+            if ("TABLE".equals(def.type) && value instanceof List<?> rows) {
+                for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
+                    Object rowObj = rows.get(rowIdx);
+                    if (!(rowObj instanceof Map<?, ?> rowMap)) {
+                        throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
+                                "字段 '" + def.name + "' 第 " + (rowIdx + 1) + " 行必须是对象");
+                    }
+                    for (FieldDef subDef : def.subFields) {
+                        if (subDef == null) continue;
+                        Object subValue = rowMap.get(subDef.name);
+                        boolean subEmpty = subValue == null
+                                || (subValue instanceof String sv && sv.isBlank());
+                        if (subDef.required() && subEmpty) {
+                            throw new BaseException(FormErrorCode.SUBMIT_FIELD_REQUIRED,
+                                    "字段 '" + def.name + "' 第 " + (rowIdx + 1)
+                                            + " 行必填子字段 '" + subDef.name + "' 缺失");
+                        }
+                        if (subEmpty) continue;
+                        try {
+                            validateSingleValue(subDef, subValue, dictFacade);
+                        } catch (BaseException e) {
+                            throw new BaseException(e.getCode(),
+                                    "字段 '" + def.name + "' 第 " + (rowIdx + 1) + " 行: " + e.getMessage());
+                        }
+                    }
+                }
+                continue;
+            }
+
             // 空值免后续校验
             if (value == null || (value instanceof String s && s.isBlank())) {
                 continue;
             }
 
-            // —— 类型校验 ——
+            validateSingleValue(def, value, dictFacade);
+        }
+    }
+
+    /**
+     * 单值校验（类型/字典值域；必填由调用方先行判断）。
+     * 主字段与 TABLE 子行共用同一口径（1402/1403）。
+     */
+    private void validateSingleValue(FieldDef def, Object value, DictFacade dictFacade) {
+            if (value == null || (value instanceof String s && s.isBlank())) {
+                return;
+            }
             switch (def.type) {
                 case "NUMBER" -> {
                     if (!(value instanceof Number)) {
@@ -181,7 +224,9 @@ public class FormFieldValidator {
                     }
                 }
                 case "DATE" -> {
-                    if (!(value instanceof String) && !(value instanceof Number)) {
+                    if (!(value instanceof String) && !(value instanceof Number)
+                            && !(value instanceof java.time.temporal.Temporal)
+                            && !(value instanceof java.util.Date)) {
                         throw new BaseException(FormErrorCode.SUBMIT_FIELD_TYPE_MISMATCH,
                                 "字段 '" + def.name + "' 需要日期类型");
                     }
@@ -208,7 +253,6 @@ public class FormFieldValidator {
                 }
                 // TEXT / RICH_TEXT / REFERENCE 无额外校验
             }
-        }
     }
 
     // ==================== BOOL 转换 ====================
@@ -224,8 +268,8 @@ public class FormFieldValidator {
         if (value instanceof Number n) return n.intValue() != 0 ? 1 : 0;
         if (value instanceof String s) {
             return switch (s.trim().toLowerCase()) {
-                case "true", "1", "yes", "on" -> 1;
-                case "false", "0", "no", "off", "" -> 0;
+                case "true", "1", "yes", "on", "是" -> 1;
+                case "false", "0", "no", "off", "", "否" -> 0;
                 default -> null;
             };
         }

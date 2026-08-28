@@ -76,15 +76,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(41, result.migrationsExecuted,
-                "全链迁移计数应为 41（39 基线 + V40 IoT 设备/命令 + V41 表单 definition 列 H2 CLOB 修正），实际: " + result.migrationsExecuted);
+        assertEquals(43, result.migrationsExecuted,
+                "全链迁移计数应为 43（41 基线 + V42 IoT 设备身份升级 + V43 表单数据导入导出权限），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 41 条，包含 BPM V8/V14/P24 V31-V39、IoT V40、Form V41")
+    @DisplayName("全链迁移后：info().applied() 共 43 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V41/V43")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(41, applied.length, "已应用迁移数应为 41");
+        assertEquals(43, applied.length, "已应用迁移数应为 43");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -225,7 +225,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(9, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V41 九条，实际: " + second.migrationsExecuted);
+        assertEquals(11, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V41/V42/V43 十一条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -282,7 +282,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V33→V36 升级链应成功");
-        assertEquals(8, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38/V39/V40/V41 八条，实际: " + second.migrationsExecuted);
+        assertEquals(10, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38/V39/V40/V41/V42/V43 十条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
@@ -502,10 +502,10 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = toV37.migrate();
         assertTrue(second.success, "V36→链尾 应成功");
-        assertEquals(5, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38/V39/V40/V41 五条，实际: " + second.migrationsExecuted);
+        assertEquals(7, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38/V39/V40/V41/V42/V43 七条，实际: " + second.migrationsExecuted);
         org.flywaydb.core.api.MigrationInfoService infoAfter = toV37.info();
         String afterVersion = infoAfter.current() == null ? "EMPTY" : infoAfter.current().getVersion().getVersion();
-        assertEquals("41", afterVersion, "终点当前版本应为 V41，实际: " + afterVersion);
+        assertEquals("43", afterVersion, "终点当前版本应为 V43，实际: " + afterVersion);
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
         // 4. 同一数据库会话实际查询：页面/按钮行的 id,parent_id,path,component,permission + view/manage
