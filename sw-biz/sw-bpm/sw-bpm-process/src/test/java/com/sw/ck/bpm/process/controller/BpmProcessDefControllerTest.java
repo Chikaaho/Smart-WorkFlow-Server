@@ -24,9 +24,11 @@ class BpmProcessDefControllerTest {
 
     private final BpmProcessDefService bpmProcessDefService = mock(BpmProcessDefService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final com.sw.ck.system.api.user.UserQueryFacade userQueryFacade =
+            mock(com.sw.ck.system.api.user.UserQueryFacade.class);
 
     private final BpmProcessDefController controller = new BpmProcessDefController(
-            bpmProcessDefService, objectMapper);
+            bpmProcessDefService, objectMapper, userQueryFacade);
 
     // ==================== GET /workflow/defs/{id}/bpmn-xml ====================
 

@@ -21,6 +21,8 @@ public class ApprovalHistoryItemDTO {
 
     /** 处理人用户 ID */
     private String assignee;
+    /** 审批人展示名（可读身份回显） */
+    private String assigneeName;
 
     /** 任务创建时间 */
     private LocalDateTime createTime;

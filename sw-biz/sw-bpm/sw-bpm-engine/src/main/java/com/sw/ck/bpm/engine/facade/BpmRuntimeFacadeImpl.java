@@ -72,13 +72,65 @@ public class BpmRuntimeFacadeImpl implements BpmRuntimeFacade {
                 return List.of();
             }
 
+            // 兜底：本引擎版本在 create 监听器内 setAssignee 不落 HI_ACTINST/HI_TASKINST 的
+            // assignee 列（已由集成探针证实），监控页流转记录审批人会显示 "-"（R-04 缺口）。
+            // 依次用历史任务表 assignee、历史流程变量 approver（DESIGNATED 指定审批人，
+            // v1 单审批人语义下与实际 assignee 一致）补齐 userTask 行。
+            Map<String, String> assigneeByTaskId = historyService
+                    .createHistoricTaskInstanceQuery()
+                    .processInstanceId(processInstanceId)
+                    .list().stream()
+                    .filter(t -> t.getAssignee() != null)
+                    .collect(Collectors.toMap(
+                            org.flowable.task.api.history.HistoricTaskInstance::getId,
+                            org.flowable.task.api.history.HistoricTaskInstance::getAssignee,
+                            (a, b) -> a));
+            String approverFallback = resolveApproverVariable(processInstanceId);
+
             return activities.stream()
                     .map(this::toActivityDto)
+                    .peek(dto -> {
+                        if (dto.getAssignee() == null && "userTask".equals(dto.getActivityType())) {
+                            String a = dto.getTaskId() != null
+                                    ? assigneeByTaskId.get(dto.getTaskId()) : null;
+                            if (a == null) {
+                                a = approverFallback;
+                            }
+                            dto.setAssignee(a);
+                        }
+                    })
                     .collect(Collectors.toList());
         } catch (Exception e) {
             log.warn("Failed to query historic activities: processInstanceId={}, error={}",
                     processInstanceId, e.getMessage());
             return List.of();
+        }
+    }
+
+
+    /**
+     * 读取历史流程变量 approver（DESIGNATED 审批人配置，String 或 List 取首元素）。
+     * 查询失败返回 null，不阻断流转记录查询。
+     */
+    private String resolveApproverVariable(String processInstanceId) {
+        try {
+            org.flowable.variable.api.history.HistoricVariableInstance var = historyService
+                    .createHistoricVariableInstanceQuery()
+                    .processInstanceId(processInstanceId)
+                    .variableName("approver")
+                    .singleResult();
+            if (var == null || var.getValue() == null) {
+                return null;
+            }
+            Object v = var.getValue();
+            if (v instanceof java.util.Collection<?> col) {
+                return col.isEmpty() ? null : String.valueOf(col.iterator().next());
+            }
+            return String.valueOf(v);
+        } catch (Exception e) {
+            log.warn("Failed to resolve approver variable: processInstanceId={}, error={}",
+                    processInstanceId, e.getMessage());
+            return null;
         }
     }
 

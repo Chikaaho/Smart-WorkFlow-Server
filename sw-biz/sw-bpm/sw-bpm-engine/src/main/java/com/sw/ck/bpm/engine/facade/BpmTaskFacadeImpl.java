@@ -137,9 +137,44 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
                 .orderByHistoricTaskInstanceEndTime().desc()
                 .list();
 
+        // 兜底：本引擎版本在 create 监听器内 setAssignee 不落 HI_TASKINST.ASSIGNEE_，
+        // 用历史流程变量 approver（DESIGNATED 指定审批人，v1 单审批人语义下与实际 assignee
+        // 一致）补齐，否则审批历史审批人显示 "-"（R-04 缺口）。
+        String approverFallback = resolveApproverVariable(processInstanceId);
+
         return tasks.stream()
                 .map(this::toDtoFromHistory)
+                .peek(dto -> {
+                    if ((dto.getAssignee() == null || dto.getAssignee().isBlank())
+                            && approverFallback != null) {
+                        dto.setAssignee(approverFallback);
+                    }
+                })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 读取历史流程变量 approver（DESIGNATED 审批人配置，String 或 List 取首元素）。
+     * 查询失败返回 null，不阻断审批历史查询。
+     */
+    private String resolveApproverVariable(String processInstanceId) {
+        try {
+            org.flowable.variable.api.history.HistoricVariableInstance var = historyService
+                    .createHistoricVariableInstanceQuery()
+                    .processInstanceId(processInstanceId)
+                    .variableName("approver")
+                    .singleResult();
+            if (var == null || var.getValue() == null) {
+                return null;
+            }
+            Object v = var.getValue();
+            if (v instanceof java.util.Collection<?> col) {
+                return col.isEmpty() ? null : String.valueOf(col.iterator().next());
+            }
+            return String.valueOf(v);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override
@@ -152,8 +187,20 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
 
     @Override
     public String getVariable(String processInstanceId, String name) {
-        Object val = runtimeService.getVariable(processInstanceId, name);
-        return val != null ? val.toString() : null;
+        try {
+            Object val = runtimeService.getVariable(processInstanceId, name);
+            if (val != null) {
+                return val.toString();
+            }
+        } catch (org.flowable.common.engine.api.FlowableObjectNotFoundException e) {
+            // 流程已结束：运行时实例被清空，回落历史变量（已办任务列表需要读取结束实例的 formKey）
+        }
+        org.flowable.variable.api.history.HistoricVariableInstance hv = historyService
+                .createHistoricVariableInstanceQuery()
+                .processInstanceId(processInstanceId)
+                .variableName(name)
+                .singleResult();
+        return hv != null && hv.getValue() != null ? hv.getValue().toString() : null;
     }
 
     @Override
@@ -164,10 +211,13 @@ public class BpmTaskFacadeImpl implements BpmTaskFacade {
         if (pi != null) {
             return pi.getBusinessKey();
         }
-        // 流程已结束（无活动实例）时无法从 RuntimeService 获取 businessKey，
-        // 返回 null 由 process 层按需扩展 HistoryService 查询。
-        log.debug("Process instance not active or not found: processInstanceId={}", processInstanceId);
-        return null;
+        // 流程已结束（无活动实例）：运行时实例被清空，回落历史实例的 businessKey
+        // （已办任务列表需要展示结束实例的业务单号）
+        org.flowable.engine.history.HistoricProcessInstance hpi = historyService
+                .createHistoricProcessInstanceQuery()
+                .processInstanceId(processInstanceId)
+                .singleResult();
+        return hpi != null ? hpi.getBusinessKey() : null;
     }
 
     // ==================== 内部方法 ====================

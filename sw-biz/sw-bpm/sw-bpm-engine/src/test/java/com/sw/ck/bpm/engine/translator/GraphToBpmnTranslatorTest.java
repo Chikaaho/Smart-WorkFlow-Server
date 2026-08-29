@@ -74,8 +74,8 @@ class GraphToBpmnTranslatorTest {
         assertThat(userTask.getId()).isEqualTo("approval_id");
         assertThat(userTask.getName()).isEqualTo("审批");
 
-        // assignee 为空（不写死）
-        assertThat(userTask.getAssignee()).isNull();
+        // DESIGNATED 指定审批人直接写原生 assignee（引擎插入时持久化，历史表可查）
+        assertThat(userTask.getAssignee()).isEqualTo("user1");
 
         // SequenceFlows
         SequenceFlow flow1 = (SequenceFlow) process.getFlowElement("e1");

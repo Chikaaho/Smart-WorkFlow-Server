@@ -32,6 +32,9 @@ public class BpmActivityDTO {
     /** 处理人（仅 userTask 类型有值，其他为 null） */
     private String assignee;
 
+    /** 处理人展示名（real_name/username，供页面可读回显；可能为 null） */
+    private String assigneeName;
+
     /** 关联 Flowable task ID（仅 userTask 类型有值，用于跳转任务详情） */
     private String taskId;
 }

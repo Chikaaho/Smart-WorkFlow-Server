@@ -45,7 +45,7 @@ class ApprovalProcessIntegrationTest {
     private static RepositoryService repositoryService;
     private static RuntimeService runtimeService;
     private static TaskService taskService;
-
+    
     /** 与引擎表达式管理器共享的空 beans map（引擎初始化后填入 listener） */
     private static final Map<Object, Object> expressionBeans = new HashMap<>();
 
@@ -251,4 +251,6 @@ class ApprovalProcessIntegrationTest {
     private static Map<String, Object> approverConfig(String type, List<String> userIds) {
         return Map.of("approver", Map.of("type", type, "value", userIds));
     }
+
+
 }

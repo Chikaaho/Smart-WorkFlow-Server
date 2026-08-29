@@ -66,18 +66,20 @@ public class BpmInstanceServiceImpl
         String processDefKey = filter != null && filter.getProcessDefKey() != null && !filter.getProcessDefKey().isBlank()
                 ? filter.getProcessDefKey() : null;
         Long initiatorId = filter != null ? filter.getInitiatorId() : null;
+        String businessKey = filter != null && filter.getBusinessKey() != null && !filter.getBusinessKey().isBlank()
+                ? filter.getBusinessKey() : null;
 
         // 数据范围：sw_bpm_instance 无 dept_id 列，等效条件在 selectInstanceCount/List 内实现
         DataScopeFilter scope = DataScopeFilter.resolve(loginContextProvider, deptScopeProvider);
 
         // 查询总数（不含 ORDER BY——H2 PostgreSQL 模式不允许 COUNT + ORDER BY）
-        long total = getBaseMapper().selectInstanceCount(status, processDefKey, initiatorId, scope);
+        long total = getBaseMapper().selectInstanceCount(status, processDefKey, initiatorId, businessKey, scope);
 
         // 分页查询（加 ORDER BY + LIMIT/OFFSET）
         long offset = (pageParam.getPageNum() - 1) * pageParam.getPageSize();
         int limit = (int) pageParam.getPageSize();
         List<BpmInstance> records = getBaseMapper().selectInstanceList(
-                status, processDefKey, initiatorId, scope, limit, offset);
+                status, processDefKey, initiatorId, businessKey, scope, limit, offset);
 
         // 组装 PageResult
         PageResult<BpmInstance> result = new PageResult<>();

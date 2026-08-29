@@ -20,6 +20,7 @@ import com.sw.ck.common.exception.CommonErrorCode;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
+import com.sw.ck.system.api.user.UserQueryFacade;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
 import org.slf4j.Logger;
@@ -75,15 +76,18 @@ public class BpmTodoController {
     private final BpmInstanceService bpmInstanceService;
     private final BpmProcessDefService bpmProcessDefService;
     private final DomainEventPublisher domainEventPublisher;
+    private final UserQueryFacade userQueryFacade;
 
     public BpmTodoController(BpmTaskFacade bpmTaskFacade,
                              BpmInstanceService bpmInstanceService,
                              BpmProcessDefService bpmProcessDefService,
-                             DomainEventPublisher domainEventPublisher) {
+                             DomainEventPublisher domainEventPublisher,
+                             UserQueryFacade userQueryFacade) {
         this.bpmTaskFacade = bpmTaskFacade;
         this.bpmInstanceService = bpmInstanceService;
         this.bpmProcessDefService = bpmProcessDefService;
         this.domainEventPublisher = domainEventPublisher;
+        this.userQueryFacade = userQueryFacade;
     }
 
     /**
@@ -233,6 +237,21 @@ public class BpmTodoController {
     }
 
     /**
+     * 按 ID 批量解析用户展示名；查不到的 ID 返回 null，不阻断查询。
+     */
+    private Map<Long, String> resolveUserNames(java.util.Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            return userQueryFacade.getUserDisplayNames(ids);
+        } catch (Exception e) {
+            log.warn("用户展示名批量查询失败，回退为 null: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
      * 驳回审批。
      *
      * @param taskId Flowable task ID
@@ -315,7 +334,14 @@ public class BpmTodoController {
 
         // 发起人
         bpmInstanceService.findByProcessInstanceId(task.getProcessInstanceId())
-                .ifPresent(instance -> dto.setInitiatorId(instance.getInitiatorId()));
+                .ifPresent(instance -> {
+                    dto.setInitiatorId(instance.getInitiatorId());
+                    dto.setInitiatorName(resolveUserNames(
+                            instance.getInitiatorId() == null
+                                    ? java.util.Set.of()
+                                    : java.util.Set.of(instance.getInitiatorId()))
+                            .get(instance.getInitiatorId()));
+                });
 
         // 任务创建时间
         if (task.getCreateTime() != null) {
@@ -326,6 +352,11 @@ public class BpmTodoController {
         // 流程变量
         Map<String, Object> variables = bpmTaskFacade.getVariables(task.getProcessInstanceId());
         dto.setProcessVariables(variables);
+
+        if (task.getAssignee() != null && task.getAssignee().matches("\\d+")) {
+            dto.setAssigneeName(resolveUserNames(java.util.Set.of(Long.valueOf(task.getAssignee())))
+                    .get(Long.valueOf(task.getAssignee())));
+        }
 
         log.debug("任务详情查询: taskId={}, processInstanceId={}", taskId, task.getProcessInstanceId());
 
@@ -346,6 +377,17 @@ public class BpmTodoController {
                         h.getEndTime().toInstant(), ZoneId.systemDefault()));
             }
             history.add(item);
+        }
+        // 审批人展示名富化（可读身份回显；查询失败不阻断详情）
+        Map<Long, String> historyNames = resolveUserNames(historyTasks.stream()
+                .map(BpmTaskDTO::getAssignee)
+                .filter(a -> a != null && a.matches("\\d+"))
+                .map(Long::valueOf)
+                .collect(Collectors.toSet()));
+        for (ApprovalHistoryItemDTO item : history) {
+            if (item.getAssignee() != null && item.getAssignee().matches("\\d+")) {
+                item.setAssigneeName(historyNames.get(Long.valueOf(item.getAssignee())));
+            }
         }
         dto.setApprovalHistory(history);
 
@@ -443,6 +485,7 @@ public class BpmTodoController {
         String formKey = bpmTaskFacade.getVariable(
                 task.getProcessInstanceId(), "formKey");
         dto.setFormKey(formKey);
+        dto.setBusinessKey(bpmTaskFacade.getBusinessKey(task.getProcessInstanceId()));
 
         if (task.getProcessDefinitionKey() != null) {
             BpmProcessDef processDef = bpmProcessDefService.findByProcessKey(task.getProcessDefinitionKey());

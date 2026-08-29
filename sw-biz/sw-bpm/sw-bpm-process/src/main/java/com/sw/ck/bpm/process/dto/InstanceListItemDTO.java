@@ -35,6 +35,8 @@ public class InstanceListItemDTO {
 
     /** 发起人用户 ID */
     private Long initiatorId;
+    /** 发起人展示名（real_name/username，供页面可读回显；可能为 null） */
+    private String initiatorName;
 
     /** 实例状态：RUNNING / APPROVED / REJECTED */
     private String status;

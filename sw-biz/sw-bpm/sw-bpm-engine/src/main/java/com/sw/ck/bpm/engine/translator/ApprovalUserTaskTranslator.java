@@ -12,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +29,8 @@ import java.util.Map;
  *   <li>通过 {@link ExtensionAttribute}（{@code flowable:approverConfig} 命名空间属性）
  *       写入 approver 配置（type + value JSON）</li>
  *   <li>通过 {@link FlowableListener} 挂载 {@code ApprovalTaskListener}（create 事件）</li>
- *   <li>assignee 不设值（不写死，不设 ${approver}）</li>
+ *   <li>DESIGNATED 静态指定审批人时直接写 BPMN 原生 {@code flowable:assignee}
+ *      （引擎插入任务时持久化，历史表 assignee 可查）；其余动态类型由 create 监听器运行期解析</li>
  * </ul>
  */
 public class ApprovalUserTaskTranslator implements NodeTypeTranslator {
@@ -96,6 +98,16 @@ public class ApprovalUserTaskTranslator implements NodeTypeTranslator {
         Map<String, Object> config = node.getConfig();
         if (config != null && config.containsKey("approver")) {
             Object approverObj = config.get("approver");
+            // DESIGNATED 静态指定审批人直接翻译为 BPMN 原生 flowable:assignee：
+            // create 监听器内 setAssignee 不落 HI_ACTINST/HI_TASKINST（集成探针证实，
+            // 监控流转记录审批人显示 "-"），原生属性由引擎在任务插入时持久化，历史表可查。
+            if (approverObj instanceof Map<?, ?> approverMap
+                    && "DESIGNATED".equalsIgnoreCase(String.valueOf(approverMap.get("type")))) {
+                String designated = firstDesignatedUser(approverMap.get("value"));
+                if (designated != null && !designated.isBlank()) {
+                    userTask.setAssignee(designated);
+                }
+            }
             try {
                 String approverJson = objectMapper.writeValueAsString(approverObj);
                 ExtensionAttribute attr = new ExtensionAttribute(
@@ -110,6 +122,19 @@ public class ApprovalUserTaskTranslator implements NodeTypeTranslator {
         }
 
         return userTask;
+    }
+
+    /**
+     * 从 DESIGNATED value（字符串标量或字符串集合）提取首个用户 ID。
+     */
+    private String firstDesignatedUser(Object value) {
+        if (value instanceof Collection<?> col) {
+            return col.isEmpty() ? null : String.valueOf(col.iterator().next());
+        }
+        if (value != null && !(value instanceof Map)) {
+            return String.valueOf(value);
+        }
+        return null;
     }
 
     /**

@@ -8,6 +8,8 @@ import com.sw.ck.bpm.process.service.BpmProcessDefService;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
+import com.sw.ck.system.api.user.UserOptionDTO;
+import com.sw.ck.system.api.user.UserQueryFacade;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,11 +36,14 @@ public class BpmProcessDefController {
 
     private final BpmProcessDefService bpmProcessDefService;
     private final ObjectMapper objectMapper;
+    private final UserQueryFacade userQueryFacade;
 
     public BpmProcessDefController(BpmProcessDefService bpmProcessDefService,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   UserQueryFacade userQueryFacade) {
         this.bpmProcessDefService = bpmProcessDefService;
         this.objectMapper = objectMapper;
+        this.userQueryFacade = userQueryFacade;
     }
 
     /**
@@ -195,6 +200,23 @@ public class BpmProcessDefController {
         BpmProcessDef published = bpmProcessDefService.publish(id);
         log.info("流程定义已发布: id={}", id);
         return R.ok(published);
+    }
+
+    /**
+     * 审批人候选列表（指定审批人配置用）。
+     * <p>
+     * 经 {@code UserQueryFacade}（sw-biz-system-api）查询正常状态用户，
+     * 不直接访问 sys_user 表；仅返回 id/username/realName 脱敏字段。
+     * 供流程定义编辑页配置单节点指定审批人。
+     * </p>
+     *
+     * @param keyword 关键字（匹配用户名/姓名，可空）
+     * @return 用户候选选项列表
+     */
+    @GetMapping("/approver-candidates")
+    public R<List<UserOptionDTO>> approverCandidates(
+            @RequestParam(required = false, defaultValue = "") String keyword) {
+        return R.ok(userQueryFacade.searchActiveUsers(keyword, 50));
     }
 
     // ==================== 内部方法 ====================

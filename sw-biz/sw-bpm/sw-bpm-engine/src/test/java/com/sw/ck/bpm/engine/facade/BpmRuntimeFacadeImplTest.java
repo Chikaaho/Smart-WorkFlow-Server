@@ -138,6 +138,20 @@ class BpmRuntimeFacadeImplTest {
 
             when(query.list()).thenReturn(List.of(ha1, ha2, ha3));
 
+            // assignee 兜底链：历史任务表 + 历史变量 approver（本用例 assignee 已有值，不触发）
+            org.flowable.task.api.history.HistoricTaskInstanceQuery taskQuery =
+                    mock(org.flowable.task.api.history.HistoricTaskInstanceQuery.class);
+            when(historyService.createHistoricTaskInstanceQuery()).thenReturn(taskQuery);
+            when(taskQuery.processInstanceId("pi-1")).thenReturn(taskQuery);
+            when(taskQuery.list()).thenReturn(List.of());
+
+            org.flowable.variable.api.history.HistoricVariableInstanceQuery varQuery =
+                    mock(org.flowable.variable.api.history.HistoricVariableInstanceQuery.class);
+            when(historyService.createHistoricVariableInstanceQuery()).thenReturn(varQuery);
+            when(varQuery.processInstanceId("pi-1")).thenReturn(varQuery);
+            when(varQuery.variableName("approver")).thenReturn(varQuery);
+            when(varQuery.singleResult()).thenReturn(null);
+
             List<BpmActivityDTO> results = facade.queryHistoricActivities("pi-1");
 
             assertThat(results).hasSize(3);
@@ -152,6 +166,44 @@ class BpmRuntimeFacadeImplTest {
 
             verify(historyService).createHistoricActivityInstanceQuery();
             verify(query).processInstanceId("pi-1");
+        }
+
+        @Test
+        @DisplayName("兜底：userTask 历史行 assignee 为空 → 用历史变量 approver 补齐")
+        void queryHistoricActivities_nullAssignee_shouldFallbackToApproverVariable() {
+            HistoricActivityInstanceQuery query = mock(HistoricActivityInstanceQuery.class);
+            when(historyService.createHistoricActivityInstanceQuery()).thenReturn(query);
+            when(query.processInstanceId("pi-2")).thenReturn(query);
+
+            HistoricActivityInstanceQuery orderQuery = mock(HistoricActivityInstanceQuery.class);
+            when(query.orderByHistoricActivityInstanceEndTime()).thenReturn(orderQuery);
+            when(orderQuery.asc()).thenReturn(query);
+
+            Date now = new Date();
+            HistoricActivityInstance ha1 = createActivity(
+                    "Activity_approve", "审批", "userTask", now, now, null, "task-9");
+            when(query.list()).thenReturn(List.of(ha1));
+
+            org.flowable.task.api.history.HistoricTaskInstanceQuery taskQuery =
+                    mock(org.flowable.task.api.history.HistoricTaskInstanceQuery.class);
+            when(historyService.createHistoricTaskInstanceQuery()).thenReturn(taskQuery);
+            when(taskQuery.processInstanceId("pi-2")).thenReturn(taskQuery);
+            when(taskQuery.list()).thenReturn(List.of());
+
+            org.flowable.variable.api.history.HistoricVariableInstanceQuery varQuery =
+                    mock(org.flowable.variable.api.history.HistoricVariableInstanceQuery.class);
+            when(historyService.createHistoricVariableInstanceQuery()).thenReturn(varQuery);
+            when(varQuery.processInstanceId("pi-2")).thenReturn(varQuery);
+            when(varQuery.variableName("approver")).thenReturn(varQuery);
+            org.flowable.variable.api.history.HistoricVariableInstance var =
+                    mock(org.flowable.variable.api.history.HistoricVariableInstance.class);
+            when(var.getValue()).thenReturn("1");
+            when(varQuery.singleResult()).thenReturn(var);
+
+            List<BpmActivityDTO> results = facade.queryHistoricActivities("pi-2");
+
+            assertThat(results).hasSize(1);
+            assertThat(results.get(0).getAssignee()).isEqualTo("1");
         }
 
         @Test

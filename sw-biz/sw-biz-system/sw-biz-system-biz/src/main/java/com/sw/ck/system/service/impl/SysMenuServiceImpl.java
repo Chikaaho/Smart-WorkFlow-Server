@@ -57,9 +57,13 @@ public class SysMenuServiceImpl implements SysMenuService {
             if (menuIds.isEmpty()) {
                 return Collections.emptyList();
             }
+            // 补全祖先闭包：授权子菜单的父目录/父菜单必须一并返回，
+            // 否则 buildTree 中父节点缺失会把子菜单整体丢弃，造成
+            // 「已授权却不出现在导航」的授权与菜单不一致。
+            // 祖先节点仅用于导航树组装，按钮权限装配（permissions）不经此路径，无扩权。
             menus = sysMenuMapper.selectList(
                     Wrappers.lambdaQuery(SysMenu.class)
-                            .in(SysMenu::getId, menuIds)
+                            .in(SysMenu::getId, withAncestors(menuIds))
                             .orderByAsc(SysMenu::getSort));
         }
 
@@ -68,6 +72,34 @@ public class SysMenuServiceImpl implements SysMenuService {
         }
 
         return buildTree(menus);
+    }
+
+    /**
+     * 补全授权菜单的祖先闭包。
+     * <p>
+     * 输入角色直接授权的菜单 ID，返回这些菜单及其全部祖先（含根）的并集。
+     * 逐级向上查 parent_id，已收集的 ID 不再重复查询，安全处理脏数据成环
+     * （超过 {@code sys_menu} 合理深度的循环直接终止）。
+     * </p>
+     */
+    private List<Long> withAncestors(List<Long> menuIds) {
+        Set<Long> result = new LinkedHashSet<>(menuIds);
+        Set<Long> pending = new LinkedHashSet<>(menuIds);
+        while (!pending.isEmpty()) {
+            List<SysMenu> current = sysMenuMapper.selectList(
+                    Wrappers.lambdaQuery(SysMenu.class).in(SysMenu::getId, pending));
+            pending.clear();
+            for (SysMenu menu : current) {
+                Long parentId = menu.getParentId();
+                if (parentId == null || parentId == 0L) {
+                    continue;
+                }
+                if (result.add(parentId)) {
+                    pending.add(parentId);
+                }
+            }
+        }
+        return new ArrayList<>(result);
     }
 
     /**

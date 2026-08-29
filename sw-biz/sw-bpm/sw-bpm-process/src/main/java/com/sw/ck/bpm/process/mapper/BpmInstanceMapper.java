@@ -34,6 +34,7 @@ public interface BpmInstanceMapper extends BaseMapperX<BpmInstance> {
               <if test="status != null and status != ''">AND status = #{status}</if>
               <if test="processDefKey != null and processDefKey != ''">AND process_def_key = #{processDefKey}</if>
               <if test="initiatorId != null">AND initiator_id = #{initiatorId}</if>
+              <if test="businessKey != null and businessKey != ''">AND business_key = #{businessKey}</if>
               <if test="scope.userId != null">AND initiator_id = #{scope.userId}</if>
               <if test="scope.deptIds != null and scope.deptIds.size() > 0">
                 AND initiator_id IN (SELECT id FROM sys_user WHERE dept_id IN
@@ -47,6 +48,7 @@ public interface BpmInstanceMapper extends BaseMapperX<BpmInstance> {
     long selectInstanceCount(@Param("status") String status,
                              @Param("processDefKey") String processDefKey,
                              @Param("initiatorId") Long initiatorId,
+                             @Param("businessKey") String businessKey,
                              @Param("scope") DataScopeFilter scope);
 
     /**
@@ -64,6 +66,7 @@ public interface BpmInstanceMapper extends BaseMapperX<BpmInstance> {
               <if test="status != null and status != ''">AND status = #{status}</if>
               <if test="processDefKey != null and processDefKey != ''">AND process_def_key = #{processDefKey}</if>
               <if test="initiatorId != null">AND initiator_id = #{initiatorId}</if>
+              <if test="businessKey != null and businessKey != ''">AND business_key = #{businessKey}</if>
               <if test="scope.userId != null">AND initiator_id = #{scope.userId}</if>
               <if test="scope.deptIds != null and scope.deptIds.size() > 0">
                 AND initiator_id IN (SELECT id FROM sys_user WHERE dept_id IN
@@ -79,6 +82,7 @@ public interface BpmInstanceMapper extends BaseMapperX<BpmInstance> {
     List<BpmInstance> selectInstanceList(@Param("status") String status,
                                          @Param("processDefKey") String processDefKey,
                                          @Param("initiatorId") Long initiatorId,
+                                         @Param("businessKey") String businessKey,
                                          @Param("scope") DataScopeFilter scope,
                                          @Param("limit") int limit,
                                          @Param("offset") long offset);

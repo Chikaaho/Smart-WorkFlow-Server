@@ -19,4 +19,8 @@ public class InstanceFilterDTO {
 
     /** 按发起人用户 ID 过滤（null = 不过滤） */
     private Long initiatorId;
+
+    /** 按业务键（表单记录 ID）过滤（null = 不过滤），用于表单记录与流程实例勾稽 */
+    private String businessKey;
+
 }

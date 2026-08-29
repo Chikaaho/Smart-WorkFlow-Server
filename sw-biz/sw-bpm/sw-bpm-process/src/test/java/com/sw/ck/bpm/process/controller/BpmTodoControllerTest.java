@@ -49,9 +49,12 @@ class BpmTodoControllerTest {
     private final BpmInstanceService bpmInstanceService = mock(BpmInstanceService.class);
     private final BpmProcessDefService bpmProcessDefService = mock(BpmProcessDefService.class);
     private final DomainEventPublisher domainEventPublisher = mock(DomainEventPublisher.class);
+    private final com.sw.ck.system.api.user.UserQueryFacade userQueryFacade =
+            mock(com.sw.ck.system.api.user.UserQueryFacade.class);
 
     private final BpmTodoController controller = new BpmTodoController(
-            bpmTaskFacade, bpmInstanceService, bpmProcessDefService, domainEventPublisher);
+            bpmTaskFacade, bpmInstanceService, bpmProcessDefService, domainEventPublisher,
+            userQueryFacade);
 
     @AfterEach
     void tearDown() {

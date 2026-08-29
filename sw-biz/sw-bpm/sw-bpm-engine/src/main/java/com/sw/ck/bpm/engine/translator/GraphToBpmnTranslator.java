@@ -160,7 +160,72 @@ public class GraphToBpmnTranslator {
         BpmnModel bpmnModel = new BpmnModel();
         bpmnModel.addProcess(process);
 
+        // 4. 生成 DI（图形交换信息）：图模型不携带坐标，按节点出现顺序做水平链式自动布局。
+        //    缺失 DI 时 bpmn-js 会渲染空白画布（流程图不可见）。
+        applyDiagramInterchange(bpmnModel, process, nodes, flowElementMap);
+
         return bpmnModel;
+    }
+
+    /** 布局常量：水平间距 / 中心线纵坐标 / 各类型节点尺寸 */
+    private static final int DI_NODE_GAP = 170;
+    private static final int DI_CENTER_Y = 220;
+    private static final int DI_EVENT_SIZE = 30;
+    private static final int DI_TASK_WIDTH = 100;
+    private static final int DI_TASK_HEIGHT = 80;
+    private static final int DI_START_X = 150;
+
+    /**
+     * 为节点与顺序边写入 DI 坐标。
+     * <p>
+     * 节点按出现顺序水平排布（事件 30×30 圆，任务 100×80 矩形，同一中心线）；
+     * 边取源节点右中点到目标节点左中点的直线航点。
+     * </p>
+     */
+    private void applyDiagramInterchange(BpmnModel bpmnModel,
+                                         org.flowable.bpmn.model.Process process,
+                                         List<GraphElement> nodes,
+                                         Map<String, FlowElement> flowElementMap) {
+        // 节点槽位（x, y, width, height）：按出现顺序水平排布，同一中心线
+        Map<String, int[]> boxByNodeId = new LinkedHashMap<>();
+        int slot = 0;
+        for (GraphElement node : nodes) {
+            FlowElement element = flowElementMap.get(node.getId());
+            if (element == null) {
+                continue;
+            }
+            boolean isEvent = !(element instanceof org.flowable.bpmn.model.UserTask);
+            int width = isEvent ? DI_EVENT_SIZE : DI_TASK_WIDTH;
+            int height = isEvent ? DI_EVENT_SIZE : DI_TASK_HEIGHT;
+            int x = DI_START_X + slot * DI_NODE_GAP + (DI_TASK_WIDTH - width) / 2;
+            int y = DI_CENTER_Y - height / 2;
+            boxByNodeId.put(node.getId(), new int[] {x, y, width, height});
+
+            org.flowable.bpmn.model.GraphicInfo gi = new org.flowable.bpmn.model.GraphicInfo();
+            gi.setX(x);
+            gi.setY(y);
+            gi.setWidth(width);
+            gi.setHeight(height);
+            bpmnModel.addGraphicInfo(element.getId(), gi);
+            slot++;
+        }
+
+        // 边航点：源右中 → 目标左中。顺序边不进 flowElementMap，须从 Process 取。
+        for (FlowElement element : process.findFlowElementsOfType(SequenceFlow.class)) {
+            SequenceFlow flow = (SequenceFlow) element;
+            int[] src = boxByNodeId.get(flow.getSourceRef());
+            int[] tgt = boxByNodeId.get(flow.getTargetRef());
+            if (src == null || tgt == null) {
+                continue;
+            }
+            org.flowable.bpmn.model.GraphicInfo from = new org.flowable.bpmn.model.GraphicInfo();
+            from.setX(src[0] + src[2]);
+            from.setY(src[1] + src[3] / 2.0);
+            org.flowable.bpmn.model.GraphicInfo to = new org.flowable.bpmn.model.GraphicInfo();
+            to.setX(tgt[0]);
+            to.setY(tgt[1] + tgt[3] / 2.0);
+            bpmnModel.addFlowGraphicInfoList(flow.getId(), List.of(from, to));
+        }
     }
 
     /**

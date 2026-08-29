@@ -76,15 +76,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(43, result.migrationsExecuted,
-                "全链迁移计数应为 43（41 基线 + V42 IoT 设备身份升级 + V43 表单数据导入导出权限），实际: " + result.migrationsExecuted);
+        assertEquals(44, result.migrationsExecuted,
+                "全链迁移计数应为 44（41 基线 + V42 IoT 设备身份升级 + V43 表单数据导入导出权限 + V44 流程引擎子菜单真实化），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 43 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V41/V43")
+    @DisplayName("全链迁移后：info().applied() 共 44 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V41/V43、A-02 V44")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(43, applied.length, "已应用迁移数应为 43");
+        assertEquals(44, applied.length, "已应用迁移数应为 44");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -225,7 +225,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(11, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V41/V42/V43 十一条，实际: " + second.migrationsExecuted);
+        assertEquals(12, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V41/V42/V43/V44 十二条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -282,7 +282,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V33→V36 升级链应成功");
-        assertEquals(10, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38/V39/V40/V41/V42/V43 十条，实际: " + second.migrationsExecuted);
+        assertEquals(11, second.migrationsExecuted, "升级链应只执行 V34/V35/V36/V37/V38/V39/V40/V41/V42/V43/V44 十一条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
@@ -432,6 +432,30 @@ class FlywayFullChainH2Test {
         });
     }
 
+    @Test
+    @DisplayName("V44：流程引擎 id=5 改目录，子菜单 20/21/22/23 挂 parent_id=5（A-02 产物）")
+    void v44_workflowChildMenus_shouldExist() throws SQLException {
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASSWORD);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT menu_type, component FROM sys_menu WHERE id = 5")) {
+                assertTrue(rs.next(), "V44 后「流程引擎」id=5 应存在");
+                assertEquals(0, rs.getInt("menu_type"), "id=5 应改为目录(menu_type=0)");
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT id, parent_id, path, component, menu_type FROM sys_menu "
+                            + "WHERE id IN (20, 21, 22, 23) ORDER BY id")) {
+                int count = 0;
+                while (rs.next()) {
+                    count++;
+                    assertEquals(5, rs.getInt("parent_id"), "子菜单 parent_id 应为 5");
+                    assertEquals(1, rs.getInt("menu_type"), "子菜单应为页面(menu_type=1)");
+                }
+                assertEquals(4, count, "V44 应有 4 条流程子菜单 20/21/22/23");
+            }
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     @FunctionalInterface
@@ -502,10 +526,10 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = toV37.migrate();
         assertTrue(second.success, "V36→链尾 应成功");
-        assertEquals(7, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38/V39/V40/V41/V42/V43 七条，实际: " + second.migrationsExecuted);
+        assertEquals(8, second.migrationsExecuted, "V36→链尾 应只执行 V37/V38/V39/V40/V41/V42/V43/V44 八条，实际: " + second.migrationsExecuted);
         org.flywaydb.core.api.MigrationInfoService infoAfter = toV37.info();
         String afterVersion = infoAfter.current() == null ? "EMPTY" : infoAfter.current().getVersion().getVersion();
-        assertEquals("43", afterVersion, "终点当前版本应为 V43，实际: " + afterVersion);
+        assertEquals("44", afterVersion, "终点当前版本应为 V44，实际: " + afterVersion);
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
         // 4. 同一数据库会话实际查询：页面/按钮行的 id,parent_id,path,component,permission + view/manage

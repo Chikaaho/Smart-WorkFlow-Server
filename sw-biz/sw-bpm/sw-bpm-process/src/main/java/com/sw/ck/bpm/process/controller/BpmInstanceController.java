@@ -14,6 +14,7 @@ import com.sw.ck.common.exception.CommonErrorCode;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.common.response.R;
+import com.sw.ck.system.api.user.UserQueryFacade;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,7 +22,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -49,13 +53,16 @@ public class BpmInstanceController {
     private final BpmInstanceService bpmInstanceService;
     private final BpmRuntimeFacade bpmRuntimeFacade;
     private final BpmProcessDefService bpmProcessDefService;
+    private final UserQueryFacade userQueryFacade;
 
     public BpmInstanceController(BpmInstanceService bpmInstanceService,
                                   BpmRuntimeFacade bpmRuntimeFacade,
-                                  BpmProcessDefService bpmProcessDefService) {
+                                  BpmProcessDefService bpmProcessDefService,
+                                  UserQueryFacade userQueryFacade) {
         this.bpmInstanceService = bpmInstanceService;
         this.bpmRuntimeFacade = bpmRuntimeFacade;
         this.bpmProcessDefService = bpmProcessDefService;
+        this.userQueryFacade = userQueryFacade;
     }
 
     /**
@@ -112,6 +119,18 @@ public class BpmInstanceController {
         List<String> activeNodeIds = bpmRuntimeFacade.getActiveActivityIds(processInstanceId);
         List<BpmActivityDTO> flowTrace = bpmRuntimeFacade.queryHistoricActivities(processInstanceId);
 
+        // 审批人展示名富化（可读身份回显；查询失败不阻断详情）
+        Map<Long, String> assigneeNames = resolveUserNames(flowTrace.stream()
+                .map(BpmActivityDTO::getAssignee)
+                .filter(a -> a != null && a.matches("\\d+"))
+                .map(Long::valueOf)
+                .collect(Collectors.toSet()));
+        flowTrace.forEach(a -> {
+            if (a.getAssignee() != null && a.getAssignee().matches("\\d+")) {
+                a.setAssigneeName(assigneeNames.get(Long.valueOf(a.getAssignee())));
+            }
+        });
+
         InstanceDetailDTO dto = toDetailDTO(instance, activeNodeIds, flowTrace);
 
         log.debug("实例详情查询: processInstanceId={}, activeNodes={}, flowTraceSize={}",
@@ -128,6 +147,21 @@ public class BpmInstanceController {
      * 若流程定义已删除导致查不到，processName 置为 null（不阻断列表查询）。
      * </p>
      */
+    /**
+     * 按 ID 批量解析用户展示名；查不到的 ID 返回 null，不阻断查询。
+     */
+    private Map<Long, String> resolveUserNames(Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            return userQueryFacade.getUserDisplayNames(ids);
+        } catch (Exception e) {
+            log.warn("用户展示名批量查询失败，回退为 null: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
     private InstanceListItemDTO toListItemDTO(BpmInstance entity) {
         InstanceListItemDTO dto = new InstanceListItemDTO();
         dto.setId(entity.getId());
@@ -136,6 +170,9 @@ public class BpmInstanceController {
         dto.setBusinessKey(entity.getBusinessKey());
         dto.setFormKey(entity.getFormKey());
         dto.setInitiatorId(entity.getInitiatorId());
+        dto.setInitiatorName(resolveUserNames(
+                entity.getInitiatorId() == null ? List.of() : List.of(entity.getInitiatorId()))
+                .get(entity.getInitiatorId()));
         dto.setStatus(entity.getStatus());
         dto.setCreateTime(entity.getCreateTime());
 
@@ -168,6 +205,9 @@ public class BpmInstanceController {
         dto.setBusinessKey(instance.getBusinessKey());
         dto.setFormKey(instance.getFormKey());
         dto.setInitiatorId(instance.getInitiatorId());
+        dto.setInitiatorName(resolveUserNames(
+                instance.getInitiatorId() == null ? List.of() : List.of(instance.getInitiatorId()))
+                .get(instance.getInitiatorId()));
         dto.setStatus(instance.getStatus());
         dto.setCreateTime(instance.getCreateTime());
 

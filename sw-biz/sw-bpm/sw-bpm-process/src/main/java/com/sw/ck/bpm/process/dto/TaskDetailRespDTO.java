@@ -38,9 +38,13 @@ public class TaskDetailRespDTO {
 
     /** 当前处理人 */
     private String assignee;
+    /** 审批人展示名（可读身份回显） */
+    private String assigneeName;
 
     /** 发起人 ID */
     private Long initiatorId;
+    /** 发起人展示名（可读身份回显） */
+    private String initiatorName;
 
     /** 任务创建时间 */
     private LocalDateTime createTime;

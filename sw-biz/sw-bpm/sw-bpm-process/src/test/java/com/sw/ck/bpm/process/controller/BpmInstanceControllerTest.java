@@ -32,9 +32,11 @@ class BpmInstanceControllerTest {
     private final BpmInstanceService bpmInstanceService = mock(BpmInstanceService.class);
     private final BpmRuntimeFacade bpmRuntimeFacade = mock(BpmRuntimeFacade.class);
     private final BpmProcessDefService bpmProcessDefService = mock(BpmProcessDefService.class);
+    private final com.sw.ck.system.api.user.UserQueryFacade userQueryFacade =
+            mock(com.sw.ck.system.api.user.UserQueryFacade.class);
 
     private final BpmInstanceController controller = new BpmInstanceController(
-            bpmInstanceService, bpmRuntimeFacade, bpmProcessDefService);
+            bpmInstanceService, bpmRuntimeFacade, bpmProcessDefService, userQueryFacade);
 
     // 测试夹具
     private BpmInstance sampleInstance;
