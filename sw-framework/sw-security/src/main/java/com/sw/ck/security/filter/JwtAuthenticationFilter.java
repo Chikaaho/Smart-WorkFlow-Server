@@ -1,5 +1,7 @@
 package com.sw.ck.security.filter;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sw.ck.common.response.R;
 import com.sw.ck.security.cache.LoginUserLoader;
 import com.sw.ck.security.config.SecurityProperties;
 import com.sw.ck.security.holder.LoginUser;
@@ -38,7 +40,8 @@ import java.util.List;
  * 仅 token 自身的解析/校验失败在此 catch 并降级为「未认证」，交由 authorizeHttpRequests +
  * {@code AuthenticationEntryPoint} 统一吐 401；而 {@code loadByUserId} 内部因
  * {@code UserDetailsProvider} 缺失（装配故障）或 Redis/回查异常（基础设施故障）抛出的异常
- * 【不在此 catch】，任其向上传播渲染为 5xx，绝不伪装成 401。
+ * 在此 catch 并由过滤器直接渲染 503（附根因消息）——不能放任其向容器传播后经 /error
+ * 重入安全链被入口点改写为 401「未认证」，那会把 Redis 未就绪伪装成账号/权限问题。
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -48,44 +51,68 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final LoginUserLoader loginUserLoader;
     private final SecurityProperties securityProperties;
 
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         try {
-            authenticate(request);
-            filterChain.doFilter(request, response);
+            if (authenticate(request, response)) {
+                filterChain.doFilter(request, response);
+            }
+            // authenticate 返回 false 表示已直写 503（基础设施未就绪），必须终止链条——
+            // 否则下游 AuthorizationFilter 会把响应覆盖为 401。
         } finally {
             LoginUserHolder.clear();
             SecurityContextHolder.clearContext();
         }
     }
 
-    private void authenticate(HttpServletRequest request) {
+    /** @return false 表示已直写 503 错误响应，调用方不得继续过滤器链 */
+    private boolean authenticate(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
         String token = resolveToken(request);
         if (token == null) {
-            return;
+            return true;
         }
         Long userId;
         try {
             if (!jwtTokenProvider.validate(token)) {
-                return;
+                return true;
             }
             userId = jwtTokenProvider.parseUserId(token);
         } catch (Exception e) {
             // 仅 token 自身的解析/校验失败 → 视为未认证，交由 AuthenticationEntryPoint 统一吐 401。
             log.warn("JWT 认证失败: {}", e.getMessage());
-            return;
+            return true;
         }
-        // loadByUserId 内部若因 UserDetailsProvider 缺失（装配故障）或 Redis/回查异常（基础设施
-        // 故障）抛出，【刻意不在此 catch】——任其向上传播渲染为 5xx，绝不降级为 401（system.md §8）。
-        LoginUser loginUser = loginUserLoader.loadByUserId(userId);
+        LoginUser loginUser;
+        try {
+            loginUser = loginUserLoader.loadByUserId(userId);
+        } catch (Exception e) {
+            // 基础设施/装配故障（如 Redis 未就绪）→ 503 直出根因；异常若放行到容器，会经 /error
+            // 重入安全链并被 AuthenticationEntryPoint 改写为 401，误导为账号/权限问题。
+            log.error("登录上下文装载失败（认证基础设施异常）: {}", e.getMessage());
+            writeInfrastructureError(response, e);
+            return false;
+        }
         if (loginUser == null) {
-            return;
+            return true;
         }
         LoginUserHolder.set(loginUser);
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(loginUser, null, List.of());
         SecurityContextHolder.getContext().setAuthentication(authentication);
+        return true;
+    }
+
+    private void writeInfrastructureError(HttpServletResponse response, Exception cause) throws IOException {
+        response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        response.setContentType("application/json;charset=UTF-8");
+        R<Void> body = R.fail(503, "登录上下文装载失败（认证基础设施未就绪，非账号或权限问题）: "
+                + cause.getMessage());
+        response.getWriter().write(objectMapper.writeValueAsString(body));
+        response.getWriter().flush();
     }
 
     private String resolveToken(HttpServletRequest request) {

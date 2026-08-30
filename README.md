@@ -18,7 +18,7 @@
 | 数据库迁移 | Flyway（PostgreSQL + H2 双方言） |
 | 认证鉴权 | JWT + Spring Security |
 | API 文档 | Springdoc OpenAPI |
-| 缓存 | Redis（可选） |
+| 缓存 | Redis 7+（**必需**，认证登录态缓存） |
 | 存储 | 策略模式（Local / MinIO / COS / Qiniu） |
 | 对象解析 / 知识库 | Tika / PDFBox / Jsoup |
 | 向量检索 | pgvector（RAG 骨架） |
@@ -102,7 +102,8 @@ sw-dependencies
 - JDK 21+
 - Maven 3.8+
 - PostgreSQL 15+（`local` / 生产）
-- Redis（如需缓存相关能力，`dev` 默认 H2 不强制）
+- **Redis 7+（必需）** — 登录态缓存承载认证主链：`dev` 虽使用 H2 内存数据库，但登录后的所有受保护请求都会读写 Redis（默认 `localhost:6379`，可用 `REDIS_HOST` / `REDIS_PORT` / `REDIS_DATABASE` / `REDIS_PASSWORD` 覆盖）。Redis 未就绪时启动不受阻，但**登录后每个请求都会失败并返回 503**（响应消息明确提示"认证基础设施未就绪"，不会伪装成账号/密码错误）。启动后端前可用 `redis-cli ping` 返回 `PONG` 确认就绪。
+- **`SW_CIPHER_KEY` 环境变量（必需）** — AES-256-GCM 加密密钥，用于外部数据源凭据与 AI 模型 API Key 等敏感字段的加密存储。要求：Base64 编码的 32 字节密钥（生成 256 位随机密钥，例如 `openssl rand -base64 32`），通过环境变量注入：`export SW_CIPHER_KEY=<生成的密钥>`。**缺失或非法时后端启动直接失败**，错误消息中含修复指引。切勿将任何真实密钥提交进仓库或复用开发密钥于生产。
 - MinIO / 云 COS / 七牛（如需对象存储，提供方连接凭据）
 
 ### 数据库模式
@@ -116,7 +117,12 @@ sw-dependencies
 ## 本地启动
 
 ```bash
-# 方式一：开发模式（H2 内存，快速跑通）
+# 0. 准备必需前置（每次干净 shell 都需要）
+export SW_CIPHER_KEY=$(openssl rand -base64 32)   # AES-256-GCM 密钥，缺失时启动失败
+redis-cli ping || redis-server --daemonize yes    # Redis 必需；确认返回 PONG 后再启动
+redis-cli ping                                    # 就绪检查：必须输出 PONG
+
+# 方式一：开发模式（H2 内存，快速跑通；登录后主链依赖上面的 Redis）
 cd sw-bootstrap
 MAVEN_OPTS="-Xmx2g" mvn spring-boot:run -Dspring-boot.run.profiles=dev
 
@@ -126,7 +132,9 @@ MAVEN_OPTS="-Xmx2g" mvn clean package -DskipTests
 java -jar target/sw-bootstrap.jar --spring.profiles.active=local
 ```
 
-启动后端点：`http://localhost:8080/api`（context-path `/api`）。
+启动后端点：`http://localhost:8080/api`（context-path `/api`）。种子管理员：`admin / admin123`（仅 dev 使用）。
+
+> 排障：登录成功但请求返回 **503「认证基础设施未就绪」** → Redis 连接失败，检查 Redis 是否启动、地址/端口/密码与 `REDIS_*` 环境变量；启动即失败并提示 `SW_CIPHER_KEY` → 按上文生成并注入密钥。
 
 ---
 
