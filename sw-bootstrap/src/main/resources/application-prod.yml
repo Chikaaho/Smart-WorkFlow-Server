@@ -1,5 +1,6 @@
 # ===================================================================
 # Smart-WorkFlow 生产环境配置
+# 敏感值一律环境变量注入，不在本文件落任何真实凭据。
 # ===================================================================
 server:
   port: 8080
@@ -18,8 +19,10 @@ spring:
       datasource:
         master:
           driver-class-name: org.postgresql.Driver
-          url: ${PG_URL:jdbc:postgresql://127.0.1.1:5433/smart_workflow}
-          username: ${PG_USERNAME:}
+          # stringtype=unspecified：生产库 jsonb 列（如 sw_form_config.definition）
+          # 允许 varchar 参数直接写入，由 PostgreSQL 按目标列类型收窄。
+          url: ${PG_URL:jdbc:postgresql://127.0.0.1:5433/smart_workflow?stringtype=unspecified}
+          username: ${PG_USERNAME:root}
           password: ${PG_PASSWORD:}
 
   data:
@@ -30,7 +33,8 @@ spring:
 
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:}
+      # Spring AI 自动配置要求非空占位；真实 key 生产注入。
+      api-key: ${OPENAI_API_KEY:sk-your-openai-api-key}
     ollama:
       base-url: http://localhost:11434
 
@@ -39,8 +43,8 @@ spring:
 
   mqtt:
     broker:
-      username: ${MQTT_USERNAME:}
-      password: ${MQTT_PASSWORD:}
+      username: ${MQTT_USERNAME:dev}
+      password: ${MQTT_PASSWORD:dev}
 
 logging:
   level:
@@ -70,8 +74,8 @@ sw:
         base-path: ./uploads
         url-prefix: /files
       minio:
-        access-key: ${MINIO_ACCESS_KEY:}
-        secret-key: ${MINIO_SECRET_KEY:}
+        access-key: ${MINIO_ACCESS_KEY:minioadmin}
+        secret-key: ${MINIO_SECRET_KEY:minioadmin}
   bpm:
     enabled: true
   form:
