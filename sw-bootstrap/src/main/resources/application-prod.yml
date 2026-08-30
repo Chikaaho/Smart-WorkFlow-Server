@@ -1,0 +1,80 @@
+# ===================================================================
+# Smart-WorkFlow 生产环境配置
+# ===================================================================
+server:
+  port: 8080
+
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
+  datasource:
+    dynamic:
+      druid:
+        initial-size: 2
+        min-idle: 1
+        max-active: 5
+      datasource:
+        master:
+          driver-class-name: org.postgresql.Driver
+          url: ${PG_URL:jdbc:postgresql://127.0.1.1:5433/smart_workflow}
+          username: ${PG_USERNAME:}
+          password: ${PG_PASSWORD:}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+    ollama:
+      base-url: http://localhost:11434
+
+  flowable:
+    database-schema-update: false
+
+  mqtt:
+    broker:
+      username: ${MQTT_USERNAME:}
+      password: ${MQTT_PASSWORD:}
+
+logging:
+  level:
+    root: info
+    com.sw.ck: debug
+    org.springframework.jdbc: debug
+    com.baomidou.mybatisplus: debug
+
+sw:
+  agent:
+    cipher-key: ${SW_CIPHER_KEY:}
+  iot:
+    enabled: true
+    tencent:
+      enabled: false
+      provider-mode: mock
+      region: ${TENCENT_CLOUD_REGION:ap-guangzhou}
+      endpoint: iotexplorer.tencentcloudapi.com
+      secret-id: ${TENCENT_CLOUD_SECRET_ID:}
+      secret-key: ${TENCENT_CLOUD_SECRET_KEY:}
+      queue-expiry-minutes: 1440
+      max-retry-count: 3
+  storage:
+    active-provider: minio
+    providers:
+      local:
+        base-path: ./uploads
+        url-prefix: /files
+      minio:
+        access-key: ${MINIO_ACCESS_KEY:}
+        secret-key: ${MINIO_SECRET_KEY:}
+  bpm:
+    enabled: true
+  form:
+    enabled: true
+  external-datasource:
+    cipher-key: ${SW_CIPHER_KEY:}

@@ -19,7 +19,7 @@ spring:
     name: smart-workflow
 
   profiles:
-    active: local
+    active: ${SPRING_PROFILES_ACTIVE:prod}
 
   # ======================== 多数据源（dynamic-datasource，主库 = master） ========================
   datasource:
@@ -225,4 +225,3 @@ springdoc:
     path: /swagger-ui.html
   api-docs:
     path: /v3/api-docs
-

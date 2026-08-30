@@ -9,6 +9,7 @@ target/
 *.log
 .claude/worktrees/
 dump.rdb
+/bootstrap.jar
 
 # 本机开发配置（可能包含本地服务地址与凭据）
 sw-bootstrap/src/main/resources/application-local.yml

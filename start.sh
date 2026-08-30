@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
 PID_FILE="${SCRIPT_DIR}/server.pid"
-APP_JAR="${APP_JAR:-${SCRIPT_DIR}/sw-bootstrap/target/sw-bootstrap-1.0.0-SNAPSHOT.jar}"
+APP_JAR="${APP_JAR:-${SCRIPT_DIR}/bootstrap.jar}"
 JAVA_BIN="${JAVA_BIN:-java}"
 
 if [[ -f "${PID_FILE}" ]]; then
