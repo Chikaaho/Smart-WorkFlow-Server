@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.sw.ck</groupId>
+        <artifactId>smart-workflow</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sw-basic-agent</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Smart-WorkFlow :: Basic :: Agent</name>
+    <description>AI 智能助手模块：大模型管理/调度图编排（LangGraph4j）/助手/对话</description>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.sw.ck</groupId>
+                <artifactId>sw-dependencies</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+          依赖说明（M07 Step1 执行确认）：
+          1. sw-security：@PreAuthorize("@ss.hasPermi(...)") 权限码所需（PermissionService/LoginUserHolder/
+             JwtAuthenticationFilter 等），声明方式对齐 sw-bpm-engine/pom.xml（仓库内部模块，非第三方依赖）。
+             mybatis-plus-spring-boot3-starter 与 spring-boot-starter-web 已由 sw-common 传递引入，无需声明。
+          2. spring-boot-starter-test（test scope）：Service/Controller 测试所需（@SpringBootTest/
+             @AutoConfigureMockMvc/JUnit5/AssertJ），声明方式对齐 sw-basic-storage-biz / sw-basic-job-biz。
+        -->
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-security</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+          H2（test scope）：测试数据库，声明方式对齐 sw-basic-storage-biz / sw-basic-job-biz /
+          sw-basic-notify-biz（版本由 sw-dependencies BOM 管理）。Service/Controller 测试
+          @SpringBootTest + H2 内存库所需。
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.sw.ck</groupId>
+            <artifactId>sw-basic-knowledge</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-ollama</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

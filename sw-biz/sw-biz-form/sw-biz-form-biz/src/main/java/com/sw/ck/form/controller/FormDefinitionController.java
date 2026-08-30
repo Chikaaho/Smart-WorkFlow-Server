@@ -1,0 +1,171 @@
+package com.sw.ck.form.controller;
+
+import com.sw.ck.common.exception.BaseException;
+import com.sw.ck.common.page.PageParam;
+import com.sw.ck.common.page.PageResult;
+import com.sw.ck.common.response.R;
+import com.sw.ck.form.api.dto.FormConfigSaveReq;
+import com.sw.ck.form.api.dto.FormCreateReq;
+import com.sw.ck.form.api.dto.FormDefDTO;
+import com.sw.ck.form.api.dto.FormUpdateReq;
+import com.sw.ck.form.api.exception.FormErrorCode;
+import com.sw.ck.form.service.FormDefService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * 表单定义管理 + 渲染接口。
+ * <p>
+ * 草稿和已发布都能取（前端设计器预览用草稿，填单用已发布）。
+ * </p>
+ */
+@RestController
+@RequestMapping("/form/def")
+public class FormDefinitionController {
+
+    private static final Logger log = LoggerFactory.getLogger(FormDefinitionController.class);
+
+    private final FormDefService formDefService;
+
+    public FormDefinitionController(FormDefService formDefService) {
+        this.formDefService = formDefService;
+    }
+
+    // ==================== 草稿管理 ====================
+
+    /**
+     * 创建表单草稿。
+     */
+    @PostMapping
+    public R<FormDefDTO> createDraft(@RequestBody FormCreateReq req) {
+        log.info("Creating form draft: formKey={}, name={}", req.getFormKey(), req.getName());
+        FormDefDTO result = formDefService.createDraft(
+                req.getFormKey(), req.getName(),
+                req.getLogicalTableName(), req.getDescription());
+        return R.ok(result);
+    }
+
+    /**
+     * 更新表单草稿。
+     */
+    @PutMapping("/{id}")
+    public R<FormDefDTO> updateDraft(@PathVariable("id") String id, @RequestBody FormUpdateReq req) {
+        log.info("Updating form draft: id={}", id);
+        FormDefDTO result = formDefService.updateDraft(
+                id, req.getName(), req.getLogicalTableName(), req.getDescription());
+        return R.ok(result);
+    }
+
+    /**
+     * 删除表单草稿（仅 DRAFT 状态允许，已发布表单禁止删除）。
+     */
+    @DeleteMapping("/{id}")
+    public R<Void> deleteDraft(@PathVariable("id") String id) {
+        log.info("Deleting form draft: id={}", id);
+        formDefService.deleteDraft(id);
+        return R.ok();
+    }
+
+    /**
+     * 保存表单配置（definition JSON）。
+     */
+    @PostMapping("/{id}/config")
+    public R<Void> saveConfig(@PathVariable("id") String id, @RequestBody FormConfigSaveReq req) {
+        log.info("Saving form config: id={}", id);
+        formDefService.saveConfig(id, req.getDefinition());
+        return R.ok();
+    }
+
+    // ==================== 分页查询 ====================
+
+    /**
+     * 分页查询表单定义列表。
+     * <p>
+     * 只返元数据（id/formKey/name/status/时间），不返 definition JSON，
+     * 避免列表体积过大。按 update_time 倒序排列（最近编辑的在前）。
+     * 多租户/逻辑删除走 MyBatis-Plus 拦截器自动过滤。
+     * </p>
+     *
+     * @param pageParam 分页参数（pageNum/pageSize）
+     * @param keyword   可选，对 name 模糊搜索（LIKE），为空不加该条件
+     * @return 分页结果，每行为 FormDefDTO
+     */
+    @GetMapping("/page")
+    public R<PageResult<FormDefDTO>> pageFormDefs(PageParam pageParam,
+                                                  @RequestParam(required = false) String keyword) {
+        PageResult<FormDefDTO> result = formDefService.pageFormDefs(pageParam, keyword);
+        return R.ok(result);
+    }
+
+    // ==================== 发布 ====================
+
+    /**
+     * 发布表单草稿。
+     * <p>
+     * 字段定义从该表单已存的 config.definition 派生，不再接受外部 body 作为字段来源。
+     * 保留 body 参数仅为 HTTP 兼容（前端可能仍发送），逻辑忽略。
+     * </p>
+     *
+     * @param id 表单 ID
+     */
+    @PostMapping("/{id}/publish")
+    public R<Void> publish(@PathVariable("id") String id, @RequestBody(required = false) String body) {
+        log.info("Publishing form: id={}", id);
+        formDefService.publish(id);
+        return R.ok();
+    }
+
+    // ==================== 查询（渲染接口） ====================
+
+    /**
+     * 根据 ID 获取表单定义 DTO。
+     */
+    @GetMapping("/{id}")
+    public R<FormDefDTO> getFormDef(@PathVariable("id") String id) {
+        FormDefDTO dto = formDefService.getFormDef(id);
+        if (dto == null) {
+            return R.fail(FormErrorCode.FORM_NOT_FOUND.getCode(), FormErrorCode.FORM_NOT_FOUND.getMessage());
+        }
+        return R.ok(dto);
+    }
+
+    /**
+     * 根据 formKey 获取表单定义 DTO。
+     */
+    @GetMapping("/by-key/{formKey}")
+    public R<FormDefDTO> getFormDefByKey(@PathVariable("formKey") String formKey) {
+        FormDefDTO dto = formDefService.getFormDefByKey(formKey);
+        if (dto == null) {
+            return R.fail(FormErrorCode.FORM_NOT_FOUND.getCode(), FormErrorCode.FORM_NOT_FOUND.getMessage());
+        }
+        return R.ok(dto);
+    }
+
+    /**
+     * 渲染接口：根据 ID 获取表单 definition JSON。
+     * <p>
+     * 草稿和已发布均可获取。前端设计器预览用草稿，填单引擎用已发布。
+     * </p>
+     */
+    @GetMapping("/{id}/definition")
+    public R<String> getDefinition(@PathVariable("id") String id) {
+        String definition = formDefService.getDefinitionById(id);
+        if (definition == null) {
+            return R.fail(FormErrorCode.CONFIG_NOT_FOUND.getCode(), FormErrorCode.CONFIG_NOT_FOUND.getMessage());
+        }
+        return R.ok(definition);
+    }
+
+    /**
+     * 渲染接口：根据 formKey 获取表单 definition JSON。
+     */
+    @GetMapping("/by-key/{formKey}/definition")
+    public R<String> getDefinitionByKey(@PathVariable("formKey") String formKey) {
+        String definition = formDefService.getDefinition(formKey);
+        if (definition == null) {
+            return R.fail(FormErrorCode.CONFIG_NOT_FOUND.getCode(), FormErrorCode.CONFIG_NOT_FOUND.getMessage());
+        }
+        return R.ok(definition);
+    }
+}

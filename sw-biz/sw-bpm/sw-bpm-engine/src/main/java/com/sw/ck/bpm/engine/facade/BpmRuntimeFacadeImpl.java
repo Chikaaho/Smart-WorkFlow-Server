@@ -1,0 +1,164 @@
+package com.sw.ck.bpm.engine.facade;
+
+import com.sw.ck.bpm.api.dto.BpmActivityDTO;
+import com.sw.ck.bpm.api.facade.BpmRuntimeFacade;
+import org.flowable.engine.HistoryService;
+import org.flowable.engine.RuntimeService;
+import org.flowable.engine.runtime.ProcessInstance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+/**
+ * BPM 运行时门面实现 —— 封装 Flowable {@link RuntimeService} + {@link HistoryService}。
+ */
+@Service
+public class BpmRuntimeFacadeImpl implements BpmRuntimeFacade {
+
+    private static final Logger log = LoggerFactory.getLogger(BpmRuntimeFacadeImpl.class);
+
+    private final RuntimeService runtimeService;
+    private final HistoryService historyService;
+
+    public BpmRuntimeFacadeImpl(RuntimeService runtimeService, HistoryService historyService) {
+        this.runtimeService = runtimeService;
+        this.historyService = historyService;
+    }
+
+    @Override
+    public String startProcess(String processDefKey, String businessKey,
+                               Map<String, Object> variables, String tenantId) {
+        ProcessInstance instance = runtimeService.startProcessInstanceByKeyAndTenantId(
+                processDefKey, businessKey, variables, tenantId);
+        log.info("BPM process started: processInstanceId={}, processDefKey={}, businessKey={}, tenantId={}",
+                instance.getId(), processDefKey, businessKey, tenantId);
+        return instance.getId();
+    }
+
+    @Override
+    public List<String> getActiveActivityIds(String processInstanceId) {
+        if (processInstanceId == null || processInstanceId.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<String> ids = runtimeService.getActiveActivityIds(processInstanceId);
+            return ids != null ? ids : List.of();
+        } catch (Exception e) {
+            log.warn("Failed to get active activity ids: processInstanceId={}, error={}",
+                    processInstanceId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    @Override
+    public List<BpmActivityDTO> queryHistoricActivities(String processInstanceId) {
+        if (processInstanceId == null || processInstanceId.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<org.flowable.engine.history.HistoricActivityInstance> activities =
+                    historyService.createHistoricActivityInstanceQuery()
+                            .processInstanceId(processInstanceId)
+                            .orderByHistoricActivityInstanceEndTime().asc()
+                            .list();
+
+            if (activities == null || activities.isEmpty()) {
+                return List.of();
+            }
+
+            // 兜底：本引擎版本在 create 监听器内 setAssignee 不落 HI_ACTINST/HI_TASKINST 的
+            // assignee 列（已由集成探针证实），监控页流转记录审批人会显示 "-"（R-04 缺口）。
+            // 依次用历史任务表 assignee、历史流程变量 approver（DESIGNATED 指定审批人，
+            // v1 单审批人语义下与实际 assignee 一致）补齐 userTask 行。
+            Map<String, String> assigneeByTaskId = historyService
+                    .createHistoricTaskInstanceQuery()
+                    .processInstanceId(processInstanceId)
+                    .list().stream()
+                    .filter(t -> t.getAssignee() != null)
+                    .collect(Collectors.toMap(
+                            org.flowable.task.api.history.HistoricTaskInstance::getId,
+                            org.flowable.task.api.history.HistoricTaskInstance::getAssignee,
+                            (a, b) -> a));
+            String approverFallback = resolveApproverVariable(processInstanceId);
+
+            return activities.stream()
+                    .map(this::toActivityDto)
+                    .peek(dto -> {
+                        if (dto.getAssignee() == null && "userTask".equals(dto.getActivityType())) {
+                            String a = dto.getTaskId() != null
+                                    ? assigneeByTaskId.get(dto.getTaskId()) : null;
+                            if (a == null) {
+                                a = approverFallback;
+                            }
+                            dto.setAssignee(a);
+                        }
+                    })
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("Failed to query historic activities: processInstanceId={}, error={}",
+                    processInstanceId, e.getMessage());
+            return List.of();
+        }
+    }
+
+
+    /**
+     * 读取历史流程变量 approver（DESIGNATED 审批人配置，String 或 List 取首元素）。
+     * 查询失败返回 null，不阻断流转记录查询。
+     */
+    private String resolveApproverVariable(String processInstanceId) {
+        try {
+            org.flowable.variable.api.history.HistoricVariableInstance var = historyService
+                    .createHistoricVariableInstanceQuery()
+                    .processInstanceId(processInstanceId)
+                    .variableName("approver")
+                    .singleResult();
+            if (var == null || var.getValue() == null) {
+                return null;
+            }
+            Object v = var.getValue();
+            if (v instanceof java.util.Collection<?> col) {
+                return col.isEmpty() ? null : String.valueOf(col.iterator().next());
+            }
+            return String.valueOf(v);
+        } catch (Exception e) {
+            log.warn("Failed to resolve approver variable: processInstanceId={}, error={}",
+                    processInstanceId, e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 内部方法 ====================
+
+    /**
+     * 将 Flowable {@code HistoricActivityInstance} 转为我方 {@link BpmActivityDTO}。
+     * <p>
+     * 时间转换：使用系统默认时区 {@code LocalDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault())}，
+     * 与 {@code BpmTodoController.toTodoTaskDTO} 模式一致。
+     * </p>
+     */
+    private BpmActivityDTO toActivityDto(
+            org.flowable.engine.history.HistoricActivityInstance ha) {
+        BpmActivityDTO dto = new BpmActivityDTO();
+        dto.setActivityId(ha.getActivityId());
+        dto.setActivityName(ha.getActivityName());
+        dto.setActivityType(ha.getActivityType());
+        if (ha.getStartTime() != null) {
+            dto.setStartTime(LocalDateTime.ofInstant(
+                    ha.getStartTime().toInstant(), ZoneId.systemDefault()));
+        }
+        if (ha.getEndTime() != null) {
+            dto.setEndTime(LocalDateTime.ofInstant(
+                    ha.getEndTime().toInstant(), ZoneId.systemDefault()));
+        }
+        dto.setAssignee(ha.getAssignee());
+        dto.setTaskId(ha.getTaskId());
+        return dto;
+    }
+}
