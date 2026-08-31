@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
  * roles = 用户经 sys_user_role 关联的已启用 sys_role.code 集合；
  * superAdmin = roles 是否包含 'superadmin'；
  * permissions = superAdmin 时为空数组（旁路），否则经 sys_role_menu→sys_menu 取
- * menu_type=2 的 permission 标识。
+ * 已授权菜单上 permission 非空白的标识（含页面节点与按钮节点）。
  * </p>
  * <p>
  * dataScope = 用户全部已启用角色 dataScope 的最宽档（多角色取最宽，排序按枚举名：
@@ -214,7 +214,7 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
 
     /**
      * 加载非超管用户的菜单权限标识。
-     * 路径：sys_user_role → sys_role（仅启用）→ sys_role_menu → sys_menu（menu_type=2 按钮，permission 非空）
+     * 路径：sys_user_role → sys_role（仅启用）→ sys_role_menu → sys_menu（permission 非空，不限 menu_type）
      * <p>
      * 与 {@code SysMenuServiceImpl.loadMenuIdsByUserId} 的菜单过滤保持一致：停用角色
      * （status=0）不贡献按钮 permission，保证「角色停用 = 有效撤权」的授权语义对称。
@@ -258,11 +258,13 @@ public class UserDetailsProviderImpl implements UserDetailsProvider {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        // 仅取菜单类型=按钮(2)且 permission 非空白的记录
+        // 取角色已授权菜单中所有 permission 非空白的记录。
+        // 不按 menu_type 过滤：页面节点（menu_type=1，如 V15 的 system:user:list）
+        // 与按钮节点（menu_type=2，如 job:create）都承载权限标识，
+        // 只收按钮会让非超管永远拿不到页面级 list 权限（全部 403）。
         List<SysMenu> menus = sysMenuMapper.selectList(
                 Wrappers.lambdaQuery(SysMenu.class)
                         .in(SysMenu::getId, menuIds)
-                        .eq(SysMenu::getMenuType, 2)
                         .isNotNull(SysMenu::getPermission)
                         .ne(SysMenu::getPermission, ""));
 
