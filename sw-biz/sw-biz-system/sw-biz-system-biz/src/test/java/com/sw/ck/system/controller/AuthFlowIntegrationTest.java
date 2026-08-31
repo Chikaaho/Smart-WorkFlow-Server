@@ -315,13 +315,13 @@ class AuthFlowIntegrationTest {
         jdbcTemplate.update("""
                 INSERT INTO sys_menu (id, parent_id, name, title, hidden, menu_type, path, component, permission, icon, sort, deleted, version)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-                """, 2L, 0L, "Lowcode", "低代码", false, 0, "lowcode", null, null, "Grid", 20);
+                """, 2L, 0L, "Form", "低代码", false, 0, "form", null, null, "Grid", 20);
 
         // 低代码子菜单
         jdbcTemplate.update("""
                 INSERT INTO sys_menu (id, parent_id, name, title, hidden, menu_type, path, component, permission, icon, sort, deleted, version)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-                """, 3L, 2L, "LowcodeHome", "低代码概览", false, 1, "overview", "lowcode/views/LowcodeHome", "lowcode:view", "Document", 10);
+                """, 3L, 2L, "FormOverview", "低代码概览", false, 1, "form/overview", "form/views/FormDefList", "form:view", "Document", 10);
 
         // Workflow
         jdbcTemplate.update("""
