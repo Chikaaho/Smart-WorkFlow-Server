@@ -343,17 +343,18 @@ sw-dependencies (BOM)
 
 ---
 
-## 11. 工程执行与验证
+## 11. 工程执行与分级验证
 
 角色、授权、任务闭环、terminal 和回执生命周期只引用根 `system.md`、`roles/executor.md` 与机器契约；本节只定义后端工程动作。
 
 - 实现前读取真实签名、装配关系与现有测试边界；prompt 与仓库事实冲突时以事实为准并记录偏差。
 - 重型命令前先按工作区 `knowledge/shared-constraints.md` §6 检查前端进程，保持前后端编译互斥。
-- **增量验证**：`MAVEN_OPTS="-Xmx2g" mvn -q compile`。
-- **校验门**：`MAVEN_OPTS="-Xmx2g" mvn -q compile` → `MAVEN_OPTS="-Xmx2g" mvn -q test`，使用全工程计数并确认基线无漂移。
+- **S**：运行能够直接覆盖局部改动的最小充分检查；不改变业务逻辑的文案/配置修正不强制全工程测试。
+- **M**：先执行 `MAVEN_OPTS="-Xmx2g" mvn -q compile`，再运行受影响模块或目标测试；影响装配、公共契约或全局配置时升级验证范围。
+- **L/XL 完整校验门**：`MAVEN_OPTS="-Xmx2g" mvn -q compile` → `MAVEN_OPTS="-Xmx2g" mvn -q test`，使用全工程计数并确认基线无漂移。
 - ❌ **反模式**：禁止用 `spring-boot:run` 作阻塞进程做启动校验
   （导致超时循环 + 端口冲突级联）。改用后台进程 + 日志轮询 + 干净进程终止 + 确定性结果码。
-- 工程证据至少包含实际改动文件、校验门原始结果/计数及易错点反向断言；格式只见根 `roles/executor.md` §8。
+- 工程证据按等级至少包含实际改动文件和实际验证结果；L/XL 另需完整校验门原始结果/计数、易错点反向断言及根 `roles/executor.md` §8 要求的正式回执。
 
 ---
 
