@@ -157,50 +157,50 @@ class AuthMeControllerTest {
                 .children(List.of())
                 .build();
 
-        // 顶级 2：Lowcode（目录，component=null）
-        AuthMenuVO lowcodeOverview = AuthMenuVO.builder()
+        // 顶级 2：Form（目录，component=null）
+        AuthMenuVO formOverview = AuthMenuVO.builder()
                 .id("3")
                 .parentId("2")
-                .name("LowcodeHome")
+                .name("FormOverview")
                 .title("低代码概览")
-                .path("overview")
-                .component("lowcode/views/LowcodeHome")
+                .path("form/overview")
+                .component("form/views/FormDefList")
                 .icon("Document")
                 .sort(10)
                 .menuType(1)
-                .permission("lowcode:view")
+                .permission("form:view")
                 .hidden(false)
                 .children(List.of())
                 .build();
 
-        AuthMenuVO lowcodeForm = AuthMenuVO.builder()
+        AuthMenuVO formDesigner = AuthMenuVO.builder()
                 .id("4")
                 .parentId("2")
-                .name("LowcodeForm")
+                .name("FormDesigner")
                 .title("表单设计")
-                .path("form")
-                .component("lowcode/views/LowcodeForm")
+                .path("form/designer")
+                .component("form/views/FormDesigner")
                 .icon("EditPen")
                 .sort(20)
                 .menuType(1)
-                .permission("lowcode:form:design")
+                .permission("form:design")
                 .hidden(false)
                 .children(List.of())
                 .build();
 
-        AuthMenuVO lowcode = AuthMenuVO.builder()
+        AuthMenuVO form = AuthMenuVO.builder()
                 .id("2")
                 .parentId(null)
-                .name("Lowcode")
+                .name("Form")
                 .title("低代码")
-                .path("lowcode")
+                .path("form")
                 .component(null)   // 目录 → component=null
                 .icon("Grid")
                 .sort(20)
                 .menuType(0)       // 目录
                 .permission(null)
                 .hidden(false)
-                .children(List.of(lowcodeOverview, lowcodeForm))
+                .children(List.of(formOverview, formDesigner))
                 .build();
 
         // 其余 5 个顶级（简化，仅验证树结构）
@@ -234,7 +234,7 @@ class AuthMeControllerTest {
                 .icon("Connection").sort(70).menuType(1).permission("openapi:view").hidden(false)
                 .children(List.of()).build();
 
-        List<AuthMenuVO> mockTree = List.of(system, lowcode, workflow, notify, agent, iot, openapi);
+        List<AuthMenuVO> mockTree = List.of(system, form, workflow, notify, agent, iot, openapi);
 
         when(sysMenuService.getMenuTree(1L, true)).thenReturn(mockTree);
 
@@ -264,22 +264,22 @@ class AuthMeControllerTest {
                 .isInstanceOf(String.class);
 
         // 验证 "低代码" 目录：component=null, menuType=0, 含 2 子
-        AuthMenuVO lowcodeNode = tree.stream()
-                .filter(n -> "Lowcode".equals(n.getName()))
-                .findFirst().orElseThrow(() -> new AssertionError("未找到 Lowcode 节点"));
+        AuthMenuVO formNode = tree.stream()
+                .filter(n -> "Form".equals(n.getName()))
+                .findFirst().orElseThrow(() -> new AssertionError("未找到 Form 节点"));
 
-        assertThat(lowcodeNode.getComponent())
+        assertThat(formNode.getComponent())
                 .as("目录节点 component 应为 null")
                 .isNull();
-        assertThat(lowcodeNode.getMenuType())
+        assertThat(formNode.getMenuType())
                 .as("目录节点 menuType 应为 0")
                 .isZero();
-        assertThat(lowcodeNode.getChildren())
-                .as("低代码应有 2 个子节点")
+        assertThat(formNode.getChildren())
+                .as("Form 应有 2 个子节点")
                 .hasSize(2);
 
         // 验证子节点 parentId 为 "2"（String）
-        for (AuthMenuVO child : lowcodeNode.getChildren()) {
+        for (AuthMenuVO child : formNode.getChildren()) {
             assertThat(child.getParentId())
                     .as("低代码子节点 %s 的 parentId 应为 \"2\"", child.getName())
                     .isEqualTo("2");
