@@ -9,6 +9,8 @@ import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.page.PageParam;
 import com.sw.ck.common.page.PageResult;
 import com.sw.ck.form.api.dto.FormDefDTO;
+import com.sw.ck.form.api.dto.FormSnapshotDTO;
+import com.sw.ck.form.api.dto.FormSnapshotDetailDTO;
 import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.dynamic.ColumnValidation;
 import com.sw.ck.form.dynamic.DynamicTableManager;
@@ -319,6 +321,44 @@ public class FormDefServiceImpl implements FormDefService {
         result.setPageNum(entityPage.getPageNum());
         result.setPageSize(entityPage.getPageSize());
         return result;
+    }
+
+    @Override
+    public List<FormSnapshotDTO> listSnapshots(String formId) {
+        FormDefEntity entity = formDefMapper.selectById(formId);
+        if (entity == null) {
+            throw new BaseException(FormErrorCode.FORM_NOT_FOUND);
+        }
+        LambdaQueryWrapper<FormSnapshotEntity> query = Wrappers.lambdaQuery(FormSnapshotEntity.class)
+                .eq(FormSnapshotEntity::getFormId, formId)
+                .orderByDesc(FormSnapshotEntity::getFormVersion);
+        return formSnapshotMapper.selectList(query).stream()
+                .map(s -> FormSnapshotDTO.builder()
+                        .formVersion(s.getFormVersion())
+                        .createTime(s.getCreateTime())
+                        .build())
+                .toList();
+    }
+
+    @Override
+    public FormSnapshotDetailDTO getSnapshot(String formId, Integer formVersion) {
+        FormDefEntity entity = formDefMapper.selectById(formId);
+        if (entity == null) {
+            throw new BaseException(FormErrorCode.FORM_NOT_FOUND);
+        }
+        LambdaQueryWrapper<FormSnapshotEntity> query = Wrappers.lambdaQuery(FormSnapshotEntity.class)
+                .eq(FormSnapshotEntity::getFormId, formId)
+                .eq(FormSnapshotEntity::getFormVersion, formVersion);
+        FormSnapshotEntity snapshot = formSnapshotMapper.selectOne(query);
+        if (snapshot == null) {
+            throw new BaseException(FormErrorCode.SNAPSHOT_NOT_FOUND,
+                    "表单版本快照不存在: version=" + formVersion);
+        }
+        return FormSnapshotDetailDTO.builder()
+                .formVersion(snapshot.getFormVersion())
+                .createTime(snapshot.getCreateTime())
+                .definition(snapshot.getDefinition())
+                .build();
     }
 
     @Override

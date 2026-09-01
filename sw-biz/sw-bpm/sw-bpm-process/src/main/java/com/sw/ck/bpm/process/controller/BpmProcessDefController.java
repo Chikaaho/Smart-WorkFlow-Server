@@ -164,10 +164,14 @@ public class BpmProcessDefController {
 
     /**
      * 分页查询流程定义列表（不含 graph_json 大字段）。
+     *
+     * @param pageParam 分页参数
+     * @param formKey   可选，按绑定表单 formKey 精确过滤（表单工作台"关联流程"用）
      */
     @GetMapping
-    public R<PageResult<BpmProcessDef>> listDefs(PageParam pageParam) {
-        PageResult<BpmProcessDef> result = bpmProcessDefService.listDefs(pageParam);
+    public R<PageResult<BpmProcessDef>> listDefs(PageParam pageParam,
+                                                 @RequestParam(required = false) String formKey) {
+        PageResult<BpmProcessDef> result = bpmProcessDefService.listDefs(pageParam, formKey);
         return R.ok(result);
     }
 

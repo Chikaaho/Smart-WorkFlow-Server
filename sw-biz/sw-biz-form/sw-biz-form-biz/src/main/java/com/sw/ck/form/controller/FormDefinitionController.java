@@ -7,12 +7,16 @@ import com.sw.ck.common.response.R;
 import com.sw.ck.form.api.dto.FormConfigSaveReq;
 import com.sw.ck.form.api.dto.FormCreateReq;
 import com.sw.ck.form.api.dto.FormDefDTO;
+import com.sw.ck.form.api.dto.FormSnapshotDTO;
+import com.sw.ck.form.api.dto.FormSnapshotDetailDTO;
 import com.sw.ck.form.api.dto.FormUpdateReq;
 import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.service.FormDefService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * 表单定义管理 + 渲染接口。
@@ -167,5 +171,35 @@ public class FormDefinitionController {
             return R.fail(FormErrorCode.CONFIG_NOT_FOUND.getCode(), FormErrorCode.CONFIG_NOT_FOUND.getMessage());
         }
         return R.ok(definition);
+    }
+
+    // ==================== 历史版本快照（只读） ====================
+
+    /**
+     * 查询表单历史版本快照列表（版本号倒序，只读）。
+     * <p>
+     * 只返版本元数据（formVersion + createTime），不返 definition JSON。
+     * </p>
+     *
+     * @param id 表单 ID
+     */
+    @GetMapping("/{id}/snapshots")
+    public R<List<FormSnapshotDTO>> listSnapshots(@PathVariable("id") String id) {
+        return R.ok(formDefService.listSnapshots(id));
+    }
+
+    /**
+     * 读取指定版本的快照详情（只读预览，含 definition JSON）。
+     * <p>
+     * 历史版本只读，不提供任何回写路径；版本不存在返 1301。
+     * </p>
+     *
+     * @param id          表单 ID
+     * @param formVersion 快照版本号
+     */
+    @GetMapping("/{id}/snapshots/{formVersion}")
+    public R<FormSnapshotDetailDTO> getSnapshot(@PathVariable("id") String id,
+                                                @PathVariable("formVersion") Integer formVersion) {
+        return R.ok(formDefService.getSnapshot(id, formVersion));
     }
 }
