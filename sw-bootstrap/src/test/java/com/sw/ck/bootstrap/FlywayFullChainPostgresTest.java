@@ -88,8 +88,8 @@ class FlywayFullChainPostgresTest {
                 .load()
                 .migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(43, result.migrationsExecuted,
-                "全链迁移计数应为 43（39 基线 + V40 IoT 设备/命令 + V42 IoT 设备身份升级 + V43 表单数据导入导出权限 + V44 流程引擎子菜单真实化），实际: "
+        assertEquals(45, result.migrationsExecuted,
+                "全链迁移计数应为 45（43 基线 + V45 系统 CRUD 按钮权限菜单 + V46 lowcode 命名清理），实际: "
                         + result.migrationsExecuted);
     }
 
@@ -101,10 +101,10 @@ class FlywayFullChainPostgresTest {
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 43 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V43、A-02 V44")
+    @DisplayName("全链迁移后：info().applied() 共 45 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V43、A-02 V44、V45/V46")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway().info().applied();
-        assertEquals(43, applied.length, "已应用迁移数应为 43");
+        assertEquals(45, applied.length, "已应用迁移数应为 45");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -303,7 +303,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(11, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V42/V43/V44 十一条，实际: " + second.migrationsExecuted);
+        assertEquals(13, second.migrationsExecuted, "升级链应只执行 V33/V34/V35/V36/V37/V38/V39/V40/V42/V43/V44/V45/V46 十三条，实际: " + second.migrationsExecuted);
         full.validate();
     }
 
@@ -327,7 +327,7 @@ class FlywayFullChainPostgresTest {
                 .load();
         MigrateResult first = migrate.migrate();
         assertTrue(first.success, "建立既有库应成功");
-        assertEquals(43, first.migrationsExecuted, "既有库应含全部 43 条，实际: " + first.migrationsExecuted);
+        assertEquals(45, first.migrationsExecuted, "既有库应含全部 45 条，实际: " + first.migrationsExecuted);
 
         // 原始 V13 的 L58 内容（修改前）：DROP INDEX IF EXISTS sw_form_def_form_key_key;
         String originalV13Line = "DROP INDEX IF EXISTS sw_form_def_form_key_key;";
