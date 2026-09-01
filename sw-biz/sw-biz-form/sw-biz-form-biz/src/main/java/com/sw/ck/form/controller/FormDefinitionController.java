@@ -14,6 +14,7 @@ import com.sw.ck.form.api.exception.FormErrorCode;
 import com.sw.ck.form.service.FormDefService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -41,6 +42,7 @@ public class FormDefinitionController {
     /**
      * 创建表单草稿。
      */
+    @PreAuthorize("@ss.hasPermi('form:design:save')")
     @PostMapping
     public R<FormDefDTO> createDraft(@RequestBody FormCreateReq req) {
         log.info("Creating form draft: formKey={}, name={}", req.getFormKey(), req.getName());
@@ -53,6 +55,7 @@ public class FormDefinitionController {
     /**
      * 更新表单草稿。
      */
+    @PreAuthorize("@ss.hasPermi('form:design:save')")
     @PutMapping("/{id}")
     public R<FormDefDTO> updateDraft(@PathVariable("id") String id, @RequestBody FormUpdateReq req) {
         log.info("Updating form draft: id={}", id);
@@ -64,6 +67,7 @@ public class FormDefinitionController {
     /**
      * 删除表单草稿（仅 DRAFT 状态允许，已发布表单禁止删除）。
      */
+    @PreAuthorize("@ss.hasPermi('form:design:save')")
     @DeleteMapping("/{id}")
     public R<Void> deleteDraft(@PathVariable("id") String id) {
         log.info("Deleting form draft: id={}", id);
@@ -74,6 +78,7 @@ public class FormDefinitionController {
     /**
      * 保存表单配置（definition JSON）。
      */
+    @PreAuthorize("@ss.hasPermi('form:design:save')")
     @PostMapping("/{id}/config")
     public R<Void> saveConfig(@PathVariable("id") String id, @RequestBody FormConfigSaveReq req) {
         log.info("Saving form config: id={}", id);
@@ -113,6 +118,7 @@ public class FormDefinitionController {
      *
      * @param id 表单 ID
      */
+    @PreAuthorize("@ss.hasPermi('form:design:publish')")
     @PostMapping("/{id}/publish")
     public R<Void> publish(@PathVariable("id") String id, @RequestBody(required = false) String body) {
         log.info("Publishing form: id={}", id);
@@ -183,6 +189,7 @@ public class FormDefinitionController {
      *
      * @param id 表单 ID
      */
+    @PreAuthorize("@ss.hasPermi('form:design')")
     @GetMapping("/{id}/snapshots")
     public R<List<FormSnapshotDTO>> listSnapshots(@PathVariable("id") String id) {
         return R.ok(formDefService.listSnapshots(id));
@@ -197,6 +204,7 @@ public class FormDefinitionController {
      * @param id          表单 ID
      * @param formVersion 快照版本号
      */
+    @PreAuthorize("@ss.hasPermi('form:design')")
     @GetMapping("/{id}/snapshots/{formVersion}")
     public R<FormSnapshotDetailDTO> getSnapshot(@PathVariable("id") String id,
                                                 @PathVariable("formVersion") Integer formVersion) {

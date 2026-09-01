@@ -13,6 +13,7 @@ import com.sw.ck.system.api.user.UserQueryFacade;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -56,6 +57,7 @@ public class BpmProcessDefController {
      * @return 流程定义 ID + 初始图
      */
     @Transactional
+    @PreAuthorize("@ss.hasPermi('workflow:def:create')")
     @PostMapping
     public R<CreateProcessDefResponse> create(@Valid @RequestBody CreateProcessDefRequest request) {
         BpmProcessDef entity = bpmProcessDefService.createDef(
@@ -78,6 +80,7 @@ public class BpmProcessDefController {
      * @return 更新后的图（含同步后的 name / formKey）
      */
     @Transactional
+    @PreAuthorize("@ss.hasPermi('workflow:def:save')")
     @PutMapping("/{id}")
     public R<ProcessGraph> updateDef(@PathVariable Long id,
                                      @RequestBody UpdateProcessDefRequest request) {
@@ -97,6 +100,7 @@ public class BpmProcessDefController {
      * @param graph 图 JSON（ProcessGraph）
      */
     @Transactional
+    @PreAuthorize("@ss.hasPermi('workflow:def:save')")
     @PutMapping("/{id}/graph")
     public R<Void> saveDraftGraph(@PathVariable Long id,
                                   @RequestBody ProcessGraph graph) {
@@ -168,6 +172,7 @@ public class BpmProcessDefController {
      * @param pageParam 分页参数
      * @param formKey   可选，按绑定表单 formKey 精确过滤（表单工作台"关联流程"用）
      */
+    @PreAuthorize("@ss.hasPermi('workflow:def:view')")
     @GetMapping
     public R<PageResult<BpmProcessDef>> listDefs(PageParam pageParam,
                                                  @RequestParam(required = false) String formKey) {
@@ -181,6 +186,7 @@ public class BpmProcessDefController {
      * @param id 流程定义 ID
      */
     @Transactional
+    @PreAuthorize("@ss.hasPermi('workflow:def:delete')")
     @DeleteMapping("/{id}")
     public R<Void> deleteDef(@PathVariable Long id) {
         bpmProcessDefService.deleteDef(id);
@@ -199,6 +205,7 @@ public class BpmProcessDefController {
      * @return 发布后的流程定义实体
      */
     @Transactional
+    @PreAuthorize("@ss.hasPermi('workflow:def:publish')")
     @PostMapping("/{id}/publish")
     public R<BpmProcessDef> publish(@PathVariable Long id) {
         BpmProcessDef published = bpmProcessDefService.publish(id);

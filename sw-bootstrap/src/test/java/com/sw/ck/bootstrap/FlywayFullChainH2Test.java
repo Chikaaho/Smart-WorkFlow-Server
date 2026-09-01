@@ -76,15 +76,15 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult result = flyway.migrate();
         assertTrue(result.success, "全链迁移应成功");
-        assertEquals(46, result.migrationsExecuted,
-                "全链迁移计数应为 46（44 基线 + V45 系统 CRUD 按钮权限菜单 + V46 lowcode 命名清理），实际: " + result.migrationsExecuted);
+        assertEquals(47, result.migrationsExecuted,
+                "全链迁移计数应为 47（44 基线 + V45/V46 + V47 P52 工作台操作权限按钮），实际: " + result.migrationsExecuted);
     }
 
     @Test
-    @DisplayName("全链迁移后：info().applied() 共 46 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V41/V43、A-02 V44、V45/V46")
+    @DisplayName("全链迁移后：info().applied() 共 47 条，包含 BPM V8/V14/P24 V31-V39、IoT V40/V42、Form V41/V43、A-02 V44、V45/V46")
     void appliedMigrationCount_shouldBe35() {
         org.flywaydb.core.api.MigrationInfo[] applied = flyway.info().applied();
-        assertEquals(46, applied.length, "已应用迁移数应为 46");
+        assertEquals(47, applied.length, "已应用迁移数应为 47");
         boolean v8Seen = false;
         boolean v14Seen = false;
         boolean v31Seen = false;
@@ -225,7 +225,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V32→链尾升级链应成功");
-        assertEquals(14, second.migrationsExecuted, "升级链应只执行 V33-V46 十四条，实际: " + second.migrationsExecuted);
+        assertEquals(15, second.migrationsExecuted, "升级链应只执行 V33-V47 十五条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD);
@@ -282,7 +282,7 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = full.migrate();
         assertTrue(second.success, "V33→V36 升级链应成功");
-        assertEquals(13, second.migrationsExecuted, "升级链应只执行 V34-V46 十三条，实际: " + second.migrationsExecuted);
+        assertEquals(14, second.migrationsExecuted, "升级链应只执行 V34-V47 十四条，实际: " + second.migrationsExecuted);
         full.validate();
 
         try (Connection conn = DriverManager.getConnection(upgradeUrl, USER, PASSWORD)) {
@@ -526,10 +526,10 @@ class FlywayFullChainH2Test {
                 .load();
         MigrateResult second = toV37.migrate();
         assertTrue(second.success, "V36→链尾 应成功");
-        assertEquals(10, second.migrationsExecuted, "V36→链尾 应只执行 V37-V46 十条，实际: " + second.migrationsExecuted);
+        assertEquals(11, second.migrationsExecuted, "V36→链尾 应只执行 V37-V47 十一条，实际: " + second.migrationsExecuted);
         org.flywaydb.core.api.MigrationInfoService infoAfter = toV37.info();
         String afterVersion = infoAfter.current() == null ? "EMPTY" : infoAfter.current().getVersion().getVersion();
-        assertEquals("46", afterVersion, "终点当前版本应为 V46，实际: " + afterVersion);
+        assertEquals("47", afterVersion, "终点当前版本应为 V46，实际: " + afterVersion);
         long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
         // 4. 同一数据库会话实际查询：页面/按钮行的 id,parent_id,path,component,permission + view/manage
