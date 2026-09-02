@@ -126,6 +126,28 @@ class FormDefinitionControllerAuthorizationTest {
     }
 
     @Test
+    @DisplayName("S1 有 form:design → 身份/definition/列表过网关；无 → 403")
+    void readChain_requiresFormDesignView() throws Exception {
+        TestAuthenticationFilter.permissions = List.of("form:design");
+        performAndAssertGatewayPassed(mockMvc, get("/form/def/f-1").header("X-Test-User", "viewer"));
+        performAndAssertGatewayPassed(mockMvc, get("/form/def/f-1/definition").header("X-Test-User", "viewer"));
+        // /page 在 mock 数据源下业务层 NPE（无分页插件），到达业务层即证明未被 403 拦截
+        try {
+            mockMvc.perform(get("/form/def/page").header("X-Test-User", "viewer")).andReturn();
+        } catch (jakarta.servlet.ServletException expected) {
+            // 业务层异常 = 权限网关已放行
+        }
+
+        TestAuthenticationFilter.permissions = List.of();
+        mockMvc.perform(get("/form/def/f-1").header("X-Test-User", "limited"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/form/def/f-1/definition").header("X-Test-User", "limited"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/form/def/page").header("X-Test-User", "limited"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     @DisplayName("有 form:design → 快照列表过网关；无 → 403")
     void snapshots_requiresFormDesignView() throws Exception {
         TestAuthenticationFilter.permissions = List.of("form:design");

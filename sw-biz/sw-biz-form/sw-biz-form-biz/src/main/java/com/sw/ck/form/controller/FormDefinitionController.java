@@ -100,6 +100,7 @@ public class FormDefinitionController {
      * @param keyword   可选，对 name 模糊搜索（LIKE），为空不加该条件
      * @return 分页结果，每行为 FormDefDTO
      */
+    @PreAuthorize("@ss.hasPermi('form:design')")
     @GetMapping("/page")
     public R<PageResult<FormDefDTO>> pageFormDefs(PageParam pageParam,
                                                   @RequestParam(required = false) String keyword) {
@@ -131,6 +132,7 @@ public class FormDefinitionController {
     /**
      * 根据 ID 获取表单定义 DTO。
      */
+    @PreAuthorize("@ss.hasPermi('form:design')")
     @GetMapping("/{id}")
     public R<FormDefDTO> getFormDef(@PathVariable("id") String id) {
         FormDefDTO dto = formDefService.getFormDef(id);
@@ -158,6 +160,7 @@ public class FormDefinitionController {
      * 草稿和已发布均可获取。前端设计器预览用草稿，填单引擎用已发布。
      * </p>
      */
+    @PreAuthorize("@ss.hasPermi('form:design')")
     @GetMapping("/{id}/definition")
     public R<String> getDefinition(@PathVariable("id") String id) {
         String definition = formDefService.getDefinitionById(id);
