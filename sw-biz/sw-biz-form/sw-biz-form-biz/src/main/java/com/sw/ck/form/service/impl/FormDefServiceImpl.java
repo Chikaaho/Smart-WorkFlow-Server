@@ -129,8 +129,13 @@ public class FormDefServiceImpl implements FormDefService {
             throw new BaseException(FormErrorCode.FORM_NOT_FOUND);
         }
 
+        // colSpan 是跨前端设计器、预览和填写页的持久化布局契约；保存入口也必须设防，
+        // 不能只依赖浏览器控件限制。缺省值兼容历史 definition，异常值直接拒绝入库。
+        validateLayoutDefinition(definition);
+
         LambdaQueryWrapper<FormConfigEntity> query = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId);
+                .eq(FormConfigEntity::getFormId, formId)
+                .isNull(FormConfigEntity::getParentTable);
         FormConfigEntity config = formConfigMapper.selectOne(query);
         if (config == null) {
             // 创建新的 config 记录
@@ -166,7 +171,8 @@ public class FormDefServiceImpl implements FormDefService {
 
         // —— Step 2: 加载 config.definition 并解析校验字段（唯一字段真源） ——
         LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId);
+                .eq(FormConfigEntity::getFormId, formId)
+                .isNull(FormConfigEntity::getParentTable);
         FormConfigEntity config = formConfigMapper.selectOne(configQuery);
         String definitionJson = (config != null) ? config.getDefinition() : "{}";
 
@@ -288,7 +294,8 @@ public class FormDefServiceImpl implements FormDefService {
             return null;
         }
         LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, entity.getId());
+                .eq(FormConfigEntity::getFormId, entity.getId())
+                .isNull(FormConfigEntity::getParentTable);
         FormConfigEntity config = formConfigMapper.selectOne(configQuery);
         return config != null ? config.getDefinition() : null;
     }
@@ -296,7 +303,8 @@ public class FormDefServiceImpl implements FormDefService {
     @Override
     public String getDefinitionById(String formId) {
         LambdaQueryWrapper<FormConfigEntity> configQuery = Wrappers.lambdaQuery(FormConfigEntity.class)
-                .eq(FormConfigEntity::getFormId, formId);
+                .eq(FormConfigEntity::getFormId, formId)
+                .isNull(FormConfigEntity::getParentTable);
         FormConfigEntity config = formConfigMapper.selectOne(configQuery);
         return config != null ? config.getDefinition() : null;
     }
@@ -428,6 +436,9 @@ public class FormDefServiceImpl implements FormDefService {
         }
         try {
             JsonNode root = objectMapper.readTree(definitionJson);
+            if (root == null || root.isNull()) {
+                throw new BaseException(FormErrorCode.DEFINITION_INVALID, "definition JSON 不能为 null");
+            }
             JsonNode fieldsArray = root.get("fields");
             if (fieldsArray == null || !fieldsArray.isArray()) {
                 // 兼容旧格式：顶层数组
@@ -443,6 +454,7 @@ public class FormDefServiceImpl implements FormDefService {
             }
             List<FieldSpec> fields = new ArrayList<>();
             for (JsonNode node : fieldsArray) {
+                validateLayoutFieldNode(node);
                 fields.add(parseFieldNodeFromDefinition(node, false));
             }
             return fields;
@@ -461,6 +473,8 @@ public class FormDefServiceImpl implements FormDefService {
      * @throws BaseException 校验失败
      */
     private FieldSpec parseFieldNodeFromDefinition(JsonNode node, boolean isSubField) {
+        validateLayoutFieldNode(node);
+
         // —— 1. name ——
         if (!node.has("name") || node.get("name").asText().isBlank()) {
             throw new BaseException(FormErrorCode.FIELD_ATTR_MISSING, "字段缺少 name");
@@ -541,6 +555,56 @@ public class FormDefServiceImpl implements FormDefService {
                     throw new BaseException(FormErrorCode.FIELD_TYPE_DISABLED,
                             "FieldType " + fieldType + " is not enabled (disabled placeholder)");
         };
+    }
+
+    /**
+     * 校验并拒绝 definition 中的非法 24 列布局值。
+     * <p>
+     * colSpan 缺省表示旧 definition，交给前端按字段类型补默认值；一旦携带就必须是
+     * 1—24 的整数。校验递归覆盖 TABLE 的 subFields，避免不同入口各自解释值域。
+     * </p>
+     */
+    private void validateLayoutDefinition(String definitionJson) {
+        if (definitionJson == null || definitionJson.isBlank() || "{}".equals(definitionJson.trim())) {
+            return;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(definitionJson);
+            if (root == null || root.isNull()) {
+                throw new BaseException(FormErrorCode.DEFINITION_INVALID, "definition JSON 不能为 null");
+            }
+            JsonNode fieldsArray = root.isArray() ? root : root.get("fields");
+            if (fieldsArray == null || !fieldsArray.isArray()) {
+                return;
+            }
+            for (JsonNode fieldNode : fieldsArray) {
+                validateLayoutFieldNode(fieldNode);
+            }
+        } catch (JsonProcessingException e) {
+            throw new BaseException(FormErrorCode.DEFINITION_INVALID,
+                    "definition JSON 解析失败: " + e.getMessage());
+        }
+    }
+
+    private void validateLayoutFieldNode(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            throw new BaseException(FormErrorCode.DEFINITION_INVALID, "definition 字段必须是对象");
+        }
+
+        JsonNode colSpan = node.get("colSpan");
+        if (colSpan != null && (!colSpan.isIntegralNumber()
+                || colSpan.intValue() < 1 || colSpan.intValue() > 24)) {
+            String name = node.path("name").asText("<unknown>");
+            throw new BaseException(FormErrorCode.DEFINITION_INVALID,
+                    "字段 '" + name + "' 的 colSpan 必须是 1—24 的整数");
+        }
+
+        JsonNode subFields = node.get("subFields");
+        if (subFields != null && subFields.isArray()) {
+            for (JsonNode subField : subFields) {
+                validateLayoutFieldNode(subField);
+            }
+        }
     }
 
     /**
