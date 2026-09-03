@@ -3,7 +3,8 @@ package com.sw.ck.bpm.process.validator;
 import com.sw.ck.bpm.api.dto.GraphElement;
 import com.sw.ck.bpm.api.dto.GraphValidationError;
 import com.sw.ck.bpm.api.exception.BpmErrorCode;
-import com.sw.ck.bpm.process.model.NodeTypeRegistry;
+import com.sw.ck.bpm.api.node.BpmNodeDefinition;
+import com.sw.ck.bpm.api.node.BpmNodeRegistry;
 import com.sw.ck.form.api.form.FormDefinitionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +16,7 @@ import java.util.*;
  * 流程图画布校验器。
  * <p>
  * 仅解释图的拓扑结构（id/kind/type/source/target），不解析 config/style。
- * 类型判定走 {@link NodeTypeRegistry} 的 Map 查找，禁止 switch/if-else 链。
+ * 类型判定、拓扑与配置能力均走 {@link BpmNodeRegistry} 的唯一注册结果，禁止平行类型表。
  * </p>
  */
 @Component
@@ -25,14 +26,12 @@ public class GraphValidator {
 
     private static final String KIND_NODE = "node";
     private static final String KIND_EDGE = "edge";
-    private static final String TYPE_START = "START";
-    private static final String TYPE_END = "END";
 
-    private final NodeTypeRegistry typeRegistry;
+    private final BpmNodeRegistry nodeRegistry;
     private final FormDefinitionService formDefinitionService;
 
-    public GraphValidator(NodeTypeRegistry typeRegistry, FormDefinitionService formDefinitionService) {
-        this.typeRegistry = typeRegistry;
+    public GraphValidator(BpmNodeRegistry nodeRegistry, FormDefinitionService formDefinitionService) {
+        this.nodeRegistry = nodeRegistry;
         this.formDefinitionService = formDefinitionService;
     }
 
@@ -66,9 +65,9 @@ public class GraphValidator {
 
         // --- 1. 恰好一个 START、一个 END ---
         List<GraphElement> starts = nodes.stream()
-                .filter(n -> TYPE_START.equals(n.getType())).toList();
+                .filter(this::isStartNode).toList();
         List<GraphElement> ends = nodes.stream()
-                .filter(n -> TYPE_END.equals(n.getType())).toList();
+                .filter(this::isEndNode).toList();
 
         if (starts.isEmpty()) {
             errors.add(err(null, BpmErrorCode.GRAPH_MISSING_START));
@@ -89,8 +88,10 @@ public class GraphValidator {
         // --- 2. 未知节点类型 ---
         for (GraphElement node : nodes) {
             String type = node.getType();
-            if (type == null || !typeRegistry.isRegistered(type)) {
+            if (type == null || nodeRegistry.find(type).isEmpty()) {
                 errors.add(err(node.getId(), BpmErrorCode.GRAPH_UNKNOWN_NODE_TYPE));
+            } else {
+                errors.addAll(nodeRegistry.validateConfig(node));
             }
         }
 
@@ -146,14 +147,15 @@ public class GraphValidator {
             for (GraphElement node : nodes) {
                 String type = node.getType();
                 if (type == null) continue;
-                var spec = typeRegistry.get(type);
-                if (spec == null) continue;
+                BpmNodeDefinition definition = nodeRegistry.find(type).orElse(null);
+                if (definition == null || definition.metadata() == null) continue;
+                var topology = definition.metadata().topology();
 
                 int in = inDegree.getOrDefault(node.getId(), 0);
                 int out = outDegree.getOrDefault(node.getId(), 0);
 
-                if (in < spec.getMinIn() || in > spec.getMaxIn()
-                        || out < spec.getMinOut() || out > spec.getMaxOut()) {
+                if (in < topology.minIncoming() || in > topology.maxIncoming()
+                        || out < topology.minOutgoing() || out > topology.maxOutgoing()) {
                     errors.add(err(node.getId(), BpmErrorCode.GRAPH_NODE_EDGE_CARDINALITY));
                 }
             }
@@ -230,5 +232,17 @@ public class GraphValidator {
                 .errorCode(errorCode.getCode())
                 .message(errorCode.getMessage())
                 .build();
+    }
+
+    private boolean isStartNode(GraphElement node) {
+        return nodeRegistry.find(node.getType())
+                .map(definition -> definition.metadata().startNode())
+                .orElse(false);
+    }
+
+    private boolean isEndNode(GraphElement node) {
+        return nodeRegistry.find(node.getType())
+                .map(definition -> definition.metadata().endNode())
+                .orElse(false);
     }
 }

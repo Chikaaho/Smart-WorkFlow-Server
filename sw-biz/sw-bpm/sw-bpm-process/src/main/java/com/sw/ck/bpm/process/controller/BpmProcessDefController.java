@@ -3,6 +3,8 @@ package com.sw.ck.bpm.process.controller;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.bpm.api.dto.*;
+import com.sw.ck.bpm.api.node.BpmNodeCapabilityDTO;
+import com.sw.ck.bpm.api.node.BpmNodeRegistry;
 import com.sw.ck.bpm.process.entity.BpmProcessDef;
 import com.sw.ck.bpm.process.service.BpmProcessDefService;
 import com.sw.ck.common.page.PageParam;
@@ -14,6 +16,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -38,13 +41,23 @@ public class BpmProcessDefController {
     private final BpmProcessDefService bpmProcessDefService;
     private final ObjectMapper objectMapper;
     private final UserQueryFacade userQueryFacade;
+    private final BpmNodeRegistry nodeRegistry;
 
     public BpmProcessDefController(BpmProcessDefService bpmProcessDefService,
                                    ObjectMapper objectMapper,
                                    UserQueryFacade userQueryFacade) {
+        this(bpmProcessDefService, objectMapper, userQueryFacade, null);
+    }
+
+    @Autowired
+    public BpmProcessDefController(BpmProcessDefService bpmProcessDefService,
+                                   ObjectMapper objectMapper,
+                                   UserQueryFacade userQueryFacade,
+                                   BpmNodeRegistry nodeRegistry) {
         this.bpmProcessDefService = bpmProcessDefService;
         this.objectMapper = objectMapper;
         this.userQueryFacade = userQueryFacade;
+        this.nodeRegistry = nodeRegistry;
     }
 
     /**
@@ -228,6 +241,18 @@ public class BpmProcessDefController {
     public R<List<UserOptionDTO>> approverCandidates(
             @RequestParam(required = false, defaultValue = "") String keyword) {
         return R.ok(userQueryFacade.searchActiveUsers(keyword, 50));
+    }
+
+    /**
+     * 当前应用已完整贯通的节点能力清单。设计端、发布校验和翻译链消费同一注册结果。
+     */
+    @PreAuthorize("@ss.hasPermi('workflow:def:view')")
+    @GetMapping("/node-capabilities")
+    public R<List<BpmNodeCapabilityDTO>> nodeCapabilities() {
+        if (nodeRegistry == null) {
+            throw new IllegalStateException("BPM 节点注册结果未装配");
+        }
+        return R.ok(nodeRegistry.capabilities());
     }
 
     // ==================== 内部方法 ====================

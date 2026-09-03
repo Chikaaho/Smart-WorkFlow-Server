@@ -33,6 +33,9 @@ public enum BpmErrorCode implements ErrorCode {
     DEPLOYMENT_FAILED(2103, "BPMN 部署失败"),
     PROCESS_NOT_PUBLISHED(2104, "流程未发布，无法获取 BPMN XML"),
     PROCESS_DEF_PUBLISHED(2105, "流程定义已发布，不可修改"),
+    NODE_CONFIG_INVALID(2106, "节点配置不合法"),
+    NODE_CAPABILITY_MISSING(2107, "节点缺少必要能力"),
+    NODE_REGISTRATION_INVALID(2108, "节点注册契约非法"),
 
     // ==================== 审批人解析（22xx） ====================
     APPROVER_RESOLVE_EMPTY(2200, "审批人解析结果为空"),

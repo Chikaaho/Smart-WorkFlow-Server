@@ -2,6 +2,7 @@ package com.sw.ck.bpm.process.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.bpm.process.service.BpmProcessDefService;
+import com.sw.ck.bpm.api.node.BpmNodeRegistry;
 import com.sw.ck.security.holder.LoginUser;
 import com.sw.ck.security.holder.LoginUserHolder;
 import com.sw.ck.security.support.PermissionService;
@@ -128,6 +129,18 @@ class BpmProcessDefControllerAuthorizationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    @DisplayName("有 workflow:def:view → 节点能力清单过网关；无 → 403")
+    void nodeCapabilities_requiresViewPermission() throws Exception {
+        TestAuthenticationFilter.permissions = List.of("workflow:def:view");
+        mockMvc.perform(get("/workflow/defs/node-capabilities").header("X-Test-User", "viewer"))
+                .andExpect(status().isOk());
+
+        TestAuthenticationFilter.permissions = List.of();
+        mockMvc.perform(get("/workflow/defs/node-capabilities").header("X-Test-User", "limited"))
+                .andExpect(status().isForbidden());
+    }
+
     @Configuration
     @EnableWebMvc
     @EnableWebSecurity
@@ -137,7 +150,7 @@ class BpmProcessDefControllerAuthorizationTest {
         @Bean
         BpmProcessDefController controller() {
             return new BpmProcessDefController(mock(BpmProcessDefService.class),
-                    new ObjectMapper(), mock(UserQueryFacade.class));
+                    new ObjectMapper(), mock(UserQueryFacade.class), mock(BpmNodeRegistry.class));
         }
 
         @Bean("ss")

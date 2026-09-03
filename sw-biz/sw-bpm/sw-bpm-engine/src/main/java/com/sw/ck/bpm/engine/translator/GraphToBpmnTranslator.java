@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sw.ck.bpm.api.dto.GraphElement;
 import com.sw.ck.bpm.api.dto.ProcessGraph;
 import com.sw.ck.bpm.api.exception.BpmErrorCode;
+import com.sw.ck.bpm.api.node.BpmNodeDefinition;
+import com.sw.ck.bpm.api.node.BpmNodeRegistry;
 import com.sw.ck.common.exception.BaseException;
 import org.flowable.bpmn.model.BpmnModel;
 import org.flowable.bpmn.model.FlowElement;
@@ -11,7 +13,6 @@ import org.flowable.bpmn.model.SequenceFlow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,8 +31,8 @@ import java.util.Objects;
  * <ul>
  *   <li>默认注册 START / END / APPROVAL 三个内置翻译器（行为与拆分前逐字节一致）</li>
  *   <li>新增节点类型 = 实现 {@link NodeTypeTranslator} 并经构造器注册，
- *       本翻译器零改动（可插拔性证明见测试）</li>
- *   <li>未注册翻译器的类型按既有语义 warn + skip（返回 null，不产出元素）</li>
+     *       本翻译器零改动（可插拔性证明见测试）</li>
+     *   <li>未注册翻译器的类型在发布翻译时确定性失败，不再 warn + skip 生成缺节点 BPMN</li>
  * </ul>
  *
  * <h3>映射规则</h3>
@@ -68,7 +69,7 @@ public class GraphToBpmnTranslator {
      * <p>
      * 新增节点类型仅需在此注册一个 {@link NodeTypeTranslator} 实现，
      * 翻译与分发逻辑（{@link #translate(ProcessGraph)}）零改动。
-     * 插件与内置类型冲突时插件覆盖内置（警告日志）。
+     * 插件与内置类型冲突时直接拒绝重复注册。
      * </p>
      *
      * @param pluginTranslators 插件翻译器列表（可为空）
@@ -76,7 +77,7 @@ public class GraphToBpmnTranslator {
     public GraphToBpmnTranslator(ObjectMapper objectMapper,
                                  List<NodeTypeTranslator> pluginTranslators) {
         this.objectMapper = Objects.requireNonNull(objectMapper, "ObjectMapper must not be null");
-        this.translatorMap = new HashMap<>();
+        this.translatorMap = new LinkedHashMap<>();
         register(new StartEventTranslator());
         register(new EndEventTranslator());
         register(new ApprovalUserTaskTranslator(objectMapper));
@@ -89,12 +90,33 @@ public class GraphToBpmnTranslator {
                 translatorMap.size());
     }
 
+    /**
+     * 生产发布路径使用的构造器：翻译器只消费统一节点注册结果，不再自行维护内置类型表。
+     */
+    public GraphToBpmnTranslator(ObjectMapper objectMapper, BpmNodeRegistry nodeRegistry) {
+        this.objectMapper = Objects.requireNonNull(objectMapper, "ObjectMapper must not be null");
+        Objects.requireNonNull(nodeRegistry, "BpmNodeRegistry must not be null");
+        this.translatorMap = new LinkedHashMap<>();
+        for (BpmNodeDefinition definition : nodeRegistry.definitions()) {
+            if (!(definition instanceof NodeTypeTranslator translator)) {
+                throw new IllegalStateException("节点缺少引擎翻译能力: " + definition.type());
+            }
+            register(translator);
+        }
+        if (translatorMap.isEmpty()) {
+            throw new IllegalStateException("节点注册结果为空，无法创建 BPMN 翻译器");
+        }
+        log.debug("GraphToBpmnTranslator initialized from BpmNodeRegistry with {} translators",
+                translatorMap.size());
+    }
+
     private void register(NodeTypeTranslator translator) {
-        NodeTypeTranslator previous = translatorMap.put(translator.type(), translator);
+        if (translator == null || translator.type() == null || translator.type().isBlank()) {
+            throw new IllegalStateException("节点翻译器类型标识为空");
+        }
+        NodeTypeTranslator previous = translatorMap.putIfAbsent(translator.type(), translator);
         if (previous != null) {
-            log.warn("Node type '{}' translator overridden: {} -> {}",
-                    translator.type(), previous.getClass().getSimpleName(),
-                    translator.getClass().getSimpleName());
+            throw new IllegalStateException("节点翻译器类型重复: " + translator.type());
         }
     }
 
@@ -109,6 +131,9 @@ public class GraphToBpmnTranslator {
         Objects.requireNonNull(graph, "ProcessGraph must not be null");
         try {
             return doTranslate(graph);
+        } catch (BaseException e) {
+            // 保留节点能力/配置等确定性业务错误码，避免被统一翻译失败码覆盖。
+            throw e;
         } catch (Exception e) {
             log.error("BPMN translation failed: {}", e.getMessage(), e);
             throw new BaseException(BpmErrorCode.TRANSLATION_FAILED.getCode(),
@@ -142,10 +167,8 @@ public class GraphToBpmnTranslator {
         // 1. 翻译所有节点
         for (GraphElement node : nodes) {
             FlowElement flowElement = translateNode(node);
-            if (flowElement != null) {
-                flowElementMap.put(node.getId(), flowElement);
-                process.addFlowElement(flowElement);
-            }
+            flowElementMap.put(node.getId(), flowElement);
+            process.addFlowElement(flowElement);
         }
 
         // 2. 翻译所有边
@@ -229,21 +252,26 @@ public class GraphToBpmnTranslator {
     }
 
     /**
-     * 翻译单个节点 —— 按 type 从注册表分发，无注册翻译器时 warn + skip。
+     * 翻译单个节点 —— 按 type 从统一注册结果分发；不存在时确定性失败。
      */
     private FlowElement translateNode(GraphElement node) {
         String type = node.getType();
         if (type == null) {
-            log.warn("Skipping node with null type: id={}", node.getId());
-            return null;
+            throw new BaseException(BpmErrorCode.NODE_CAPABILITY_MISSING.getCode(),
+                    "节点类型缺失: " + node.getId());
         }
 
         NodeTypeTranslator translator = translatorMap.get(type);
         if (translator == null) {
-            log.warn("Unknown node type '{}', skipping: id={}", type, node.getId());
-            return null;
+            throw new BaseException(BpmErrorCode.NODE_CAPABILITY_MISSING.getCode(),
+                    "节点类型未注册或缺少翻译能力: " + type);
         }
-        return translator.translate(node);
+        FlowElement translated = translator.translate(node);
+        if (translated == null) {
+            throw new BaseException(BpmErrorCode.NODE_CAPABILITY_MISSING.getCode(),
+                    "节点翻译能力未返回 BPMN 元素: " + type);
+        }
+        return translated;
     }
 
     /**

@@ -2,7 +2,14 @@ package com.sw.ck.bpm.engine.translator;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sw.ck.bpm.api.dto.GraphValidationError;
+import com.sw.ck.bpm.api.exception.BpmErrorCode;
 import com.sw.ck.bpm.api.dto.GraphElement;
+import com.sw.ck.bpm.api.node.BpmNodeCapability;
+import com.sw.ck.bpm.api.node.BpmNodeConfigField;
+import com.sw.ck.bpm.api.node.BpmNodeMetadata;
+import com.sw.ck.bpm.api.node.BpmNodeTopology;
+import com.sw.ck.bpm.api.spi.assignee.NodeApproverType;
 import org.flowable.bpmn.model.ExtensionAttribute;
 import org.flowable.bpmn.model.FlowElement;
 import org.flowable.bpmn.model.FlowableListener;
@@ -10,11 +17,13 @@ import org.flowable.bpmn.model.ImplementationType;
 import org.flowable.bpmn.model.UserTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.EnumSet;
 
 /**
  * APPROVAL 节点翻译器 —— 画布 APPROVAL 节点 → BPMN {@link UserTask}。
@@ -33,6 +42,7 @@ import java.util.Map;
  *      （引擎插入任务时持久化，历史表 assignee 可查）；其余动态类型由 create 监听器运行期解析</li>
  * </ul>
  */
+@Component
 public class ApprovalUserTaskTranslator implements NodeTypeTranslator {
 
     private static final Logger log = LoggerFactory.getLogger(ApprovalUserTaskTranslator.class);
@@ -55,6 +65,67 @@ public class ApprovalUserTaskTranslator implements NodeTypeTranslator {
     @Override
     public String type() {
         return "APPROVAL";
+    }
+
+    @Override
+    public BpmNodeMetadata metadata() {
+        return new BpmNodeMetadata(
+                "审批",
+                "人工审批节点",
+                "TASK",
+                new BpmNodeTopology(1, 1, 1, 1),
+                List.of(
+                        new BpmNodeConfigField("name", "节点名称", "string", false, Map.of()),
+                        new BpmNodeConfigField("approver", "审批人", "object", true,
+                                Map.of("approverTypes", List.of(NodeApproverType.DESIGNATED)))),
+                "1",
+                EnumSet.of(BpmNodeCapability.DESIGN, BpmNodeCapability.TRANSLATE,
+                        BpmNodeCapability.RUNTIME, BpmNodeCapability.CONFIG_VALIDATE),
+                false,
+                false,
+                false,
+                true);
+    }
+
+    @Override
+    public List<GraphValidationError> validateConfig(GraphElement node) {
+        Map<String, Object> config = node.getConfig();
+        if (config == null || !config.containsKey("approver")) {
+            return List.of(configError(node, BpmErrorCode.APPROVER_CONFIG_MISSING,
+                    "审批节点缺少 approver 配置"));
+        }
+        Object approverObj = config.get("approver");
+        if (!(approverObj instanceof Map<?, ?> approverMap)) {
+            return List.of(configError(node, BpmErrorCode.NODE_CONFIG_INVALID,
+                    "审批人配置必须是对象"));
+        }
+        Object typeValue = approverMap.get("type");
+        String approverType = typeValue == null ? null : String.valueOf(typeValue).trim();
+        if (approverType == null || approverType.isBlank()) {
+            return List.of(configError(node, BpmErrorCode.APPROVER_CONFIG_MISSING,
+                    "审批人类型不能为空"));
+        }
+        if (!NodeApproverType.DESIGNATED.equalsIgnoreCase(approverType)) {
+            return List.of(configError(node, BpmErrorCode.APPROVER_TYPE_NOT_IMPLEMENTED,
+                    "未实现的审批人类型: " + approverType));
+        }
+        Object value = approverMap.get("value");
+        if (value == null || (value instanceof String text && text.isBlank())
+                || (value instanceof Collection<?> collection
+                && (collection.isEmpty() || collection.stream().allMatch(item -> item == null
+                || item.toString().isBlank())))) {
+            return List.of(configError(node, BpmErrorCode.APPROVER_RESOLVE_EMPTY,
+                    "指定审批人不能为空"));
+        }
+        return List.of();
+    }
+
+    private GraphValidationError configError(GraphElement node, BpmErrorCode errorCode, String message) {
+        return GraphValidationError.builder()
+                .elementId(node.getId())
+                .errorCode(errorCode.getCode())
+                .message(message)
+                .build();
     }
 
     /**

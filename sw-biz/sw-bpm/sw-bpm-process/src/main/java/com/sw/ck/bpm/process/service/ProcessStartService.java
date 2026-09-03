@@ -80,7 +80,7 @@ public class ProcessStartService {
      *   <li>查启用绑定 — 无绑定则 info 日志 return（no-op，不是每个表单都走流程）</li>
      *   <li>解析审批人 — 经 {@link ApproverResolver} 获取 approver 变量值</li>
      *   <li>经 Facade 发起 — {@code bpmRuntimeFacade.startProcess(...)}</li>
-     *   <li>落实例 — {@code sw_bpm_instance} 写入 RUNNING 状态（基列靠拦截器自动注入）</li>
+     *   <li>落实例 — {@code sw_bpm_instance} 按引擎运行态写入 RUNNING 或 APPROVED（基列靠拦截器自动注入）</li>
      * </ol>
      *
      * @param cmd 发起命令，不可为空
@@ -142,13 +142,25 @@ public class ProcessStartService {
         instance.setBusinessKey(cmd.getRecordId());
         instance.setFormKey(cmd.getFormKey());
         instance.setInitiatorId(cmd.getSubmitter());
-        instance.setStatus(InstanceStatusEnum.RUNNING.getCode());
+        // Flowable 可能在 startProcess 返回前就完成无人工节点的流程（例如
+        // START → P57_VERIFY → END）。此时若无条件写 RUNNING，会产生“引擎已到
+        // End、业务记录仍运行中”的假终态；沿用审批完成路径的 APPROVED 语义。
+        boolean processActive = bpmTaskFacade.isProcessActive(processInstanceId);
+        instance.setStatus(processActive
+                ? InstanceStatusEnum.RUNNING.getCode()
+                : InstanceStatusEnum.APPROVED.getCode());
         bpmInstanceService.save(instance);
 
-        log.info("流程实例记录已保存: id={}, status=RUNNING", instance.getId());
+        log.info("流程实例记录已保存: id={}, status={}, processActive={}",
+                instance.getId(), instance.getStatus(), processActive);
 
         // 5. 发布 TODO_CREATED 通知事件（查询刚创建的 task）
-        publishTodoCreatedEvent(processInstanceId, cmd);
+        if (processActive) {
+            publishTodoCreatedEvent(processInstanceId, cmd);
+        } else {
+            log.info("流程启动后已到达终态，跳过 TODO_CREATED 通知: processInstanceId={}",
+                    processInstanceId);
+        }
     }
 
     /**
