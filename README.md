@@ -1,8 +1,8 @@
-# Smart-WorkFlow-Server
+# Smart-WorkFlow-sPaaS-server
 
-Smart-WorkFlow-Server 是 Smart-WorkFlow 的后端 API 服务，基于 Java 21 与 Spring Boot 构建。它以模块化单体承载低代码表单、流程自动化、组织权限、通知、存储、任务、IoT、知识库和 AI Agent 等业务域。
+Smart-WorkFlow-sPaaS-server 是 CH-aPaaS 的后端 API 服务，基于 Java 21 与 Spring Boot 构建。它以模块化单体承载低代码表单、流程自动化、组织权限、通知、存储、任务、IoT、知识库和 AI Agent 等业务域。
 
-配套入口：[Smart-WorkFlow-Web](../Smart-WorkFlow-Web/README.md) · [项目知识中心](../README.md)
+配套入口：[Smart-WorkFlow-aPaaS-Web](../Smart-WorkFlow-Web/README.md) · [项目知识中心](../README.md)
 
 ## 核心能力
 
