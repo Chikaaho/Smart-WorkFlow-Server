@@ -83,6 +83,8 @@ sw:
   external-datasource:
     cipher-key: ${SW_CIPHER_KEY:}
   security:
+    debug-auth:
+      enabled: false
     cookie:
       # 生产同源保前缀部署：网关入口 /sw-server/api，refresh cookie 必须覆盖该前缀，
       # 否则浏览器不会向 /sw-server/api/auth/refresh 发送 cookie（P45 第一断点）

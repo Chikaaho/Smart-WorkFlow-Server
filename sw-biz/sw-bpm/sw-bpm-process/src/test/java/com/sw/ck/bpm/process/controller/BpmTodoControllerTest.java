@@ -9,6 +9,8 @@ import com.sw.ck.bpm.process.dto.TaskDetailRespDTO;
 import com.sw.ck.bpm.process.dto.TodoTaskRespDTO;
 import com.sw.ck.bpm.process.entity.BpmInstance;
 import com.sw.ck.bpm.process.entity.BpmProcessDef;
+import com.sw.ck.bpm.process.entity.InstanceStatusEnum;
+import com.sw.ck.bpm.api.exception.BpmErrorCode;
 import com.sw.ck.bpm.process.service.BpmInstanceService;
 import com.sw.ck.bpm.process.service.BpmProcessDefService;
 import com.sw.ck.common.event.DomainEventPublisher;
@@ -213,6 +215,27 @@ class BpmTodoControllerTest {
             verify(bpmTaskFacade).complete(eq("task-001"), isNull());
             verify(bpmInstanceService, never()).updateStatus(anyString(), anyString());
             verify(domainEventPublisher, never()).publish(any(BpmNotifyEvent.class));
+        }
+
+        @Test
+        @DisplayName("实例已 FAILED → 拒绝继续审批且不调用 Flowable 完成")
+        void complete_failedInstance_shouldRejectFurtherApproval() {
+            setLoginUser();
+            BpmTaskDTO task = createTask("task-failed");
+            BpmInstance failed = createInstance();
+            failed.setProcessInstanceId("pi-task-failed");
+            failed.setStatus(InstanceStatusEnum.FAILED.getCode());
+            when(bpmTaskFacade.getTask("task-failed")).thenReturn(task);
+            when(bpmInstanceService.findByProcessInstanceId("pi-task-failed"))
+                    .thenReturn(Optional.of(failed));
+
+            assertThatThrownBy(() -> controller.complete("task-failed"))
+                    .isInstanceOf(BaseException.class)
+                    .satisfies(error -> assertThat(((BaseException) error).getCode())
+                            .isEqualTo(BpmErrorCode.INSTANCE_FAILED.getCode()));
+            verify(bpmTaskFacade, never()).getVariables(anyString());
+            verify(bpmTaskFacade, never()).complete(anyString(), any());
+            verify(bpmTaskFacade, never()).completeAsUser(anyString(), anyString(), any());
         }
 
         @Test

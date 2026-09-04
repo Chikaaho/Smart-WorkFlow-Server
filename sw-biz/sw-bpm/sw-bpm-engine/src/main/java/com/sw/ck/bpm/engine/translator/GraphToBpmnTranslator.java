@@ -8,7 +8,10 @@ import com.sw.ck.bpm.api.node.BpmNodeDefinition;
 import com.sw.ck.bpm.api.node.BpmNodeRegistry;
 import com.sw.ck.common.exception.BaseException;
 import org.flowable.bpmn.model.BpmnModel;
+import org.flowable.bpmn.model.ExtensionAttribute;
 import org.flowable.bpmn.model.FlowElement;
+import org.flowable.bpmn.model.FlowableListener;
+import org.flowable.bpmn.model.ImplementationType;
 import org.flowable.bpmn.model.SequenceFlow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +20,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Comparator;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import org.flowable.bpmn.model.ExclusiveGateway;
 
 /**
  * 流程图画布模型 → BPMN 2.0 模型翻译器。
@@ -81,6 +88,8 @@ public class GraphToBpmnTranslator {
         register(new StartEventTranslator());
         register(new EndEventTranslator());
         register(new ApprovalUserTaskTranslator(objectMapper));
+        // P58 节点由生产构造器从 BpmNodeRegistry 注入；此兼容构造器只保留
+        // P57 以前的 START/END/APPROVAL 集合，避免旧调用方绕过统一注册结果。
         if (pluginTranslators != null) {
             for (NodeTypeTranslator plugin : pluginTranslators) {
                 register(plugin);
@@ -171,8 +180,12 @@ public class GraphToBpmnTranslator {
             process.addFlowElement(flowElement);
         }
 
-        // 2. 翻译所有边
-        for (GraphElement edge : edges) {
+        // 2. 翻译所有边。排他网关必须先按 priority 求值，DEFAULT 最后求值；否则
+        // 设计器提交顺序可能让 DEFAULT 抢先命中，造成条件与轨迹不一致。
+        List<GraphElement> orderedEdges = edges.stream()
+                .sorted(Comparator.comparingInt(this::edgeEvaluationOrder))
+                .toList();
+        for (GraphElement edge : orderedEdges) {
             SequenceFlow sequenceFlow = translateEdge(edge, flowElementMap);
             if (sequenceFlow != null) {
                 process.addFlowElement(sequenceFlow);
@@ -289,6 +302,80 @@ public class GraphToBpmnTranslator {
 
         SequenceFlow sequenceFlow = new SequenceFlow(source, target);
         sequenceFlow.setId(edge.getId());
+        FlowElement sourceElement = flowElementMap.get(source);
+        if (sourceElement instanceof ExclusiveGateway gateway) {
+            Map<String, Object> config = edge.getConfig() == null ? Map.of() : edge.getConfig();
+            boolean isDefault = Boolean.TRUE.equals(config.get("default"))
+                    || Boolean.TRUE.equals(config.get("isDefault"));
+            String branchId = config.get("branchId") == null ? edge.getId()
+                    : String.valueOf(config.get("branchId"));
+            sequenceFlow.setName(branchId);
+            String priority = config.get("priority") == null ? ""
+                    : String.valueOf(config.get("priority")).replace("'", "");
+            String branchExpression = isDefault ? "DEFAULT" : extractCondition(config);
+            ExtensionAttribute priorityAttribute = new ExtensionAttribute("branchPriority", priority);
+            priorityAttribute.setNamespace("http://flowable.org/bpmn");
+            priorityAttribute.setNamespacePrefix("flowable");
+            sequenceFlow.addAttribute(priorityAttribute);
+            ExtensionAttribute expressionAttribute = new ExtensionAttribute("branchExpression",
+                    branchExpression == null ? "" : branchExpression);
+            expressionAttribute.setNamespace("http://flowable.org/bpmn");
+            expressionAttribute.setNamespacePrefix("flowable");
+            sequenceFlow.addAttribute(expressionAttribute);
+            // SequenceFlow 的通用扩展属性不会被 Flowable XML converter 保留；用
+            // documentation 保存不可执行的审计元数据，部署后仍可从真实模型读取。
+            String auditExpression = branchExpression == null ? "" : branchExpression;
+            String encodedAuditExpression = Base64.getEncoder().encodeToString(
+                    auditExpression.getBytes(StandardCharsets.UTF_8));
+            sequenceFlow.setDocumentation("P58_BRANCH_META|" + priority + "|" + encodedAuditExpression);
+            FlowableListener branchTraceListener = new FlowableListener();
+            branchTraceListener.setEvent("take");
+            branchTraceListener.setImplementationType(
+                    ImplementationType.IMPLEMENTATION_TYPE_DELEGATEEXPRESSION);
+            branchTraceListener.setImplementation("${bpmBranchConditionEvaluator}");
+            sequenceFlow.setExecutionListeners(new java.util.ArrayList<>(List.of(branchTraceListener)));
+            if (isDefault) {
+                gateway.setDefaultFlow(sequenceFlow.getId());
+            } else {
+                String expression = extractCondition(config);
+                if (expression == null || expression.isBlank()) {
+                    throw new BaseException(BpmErrorCode.BRANCH_CONFIG_INVALID.getCode(),
+                            "非默认分支缺少条件表达式: " + edge.getId());
+                }
+                String encoded = Base64.getEncoder().encodeToString(
+                        expression.getBytes(StandardCharsets.UTF_8));
+                String branchEncoded = Base64.getEncoder().encodeToString(
+                        branchId.getBytes(StandardCharsets.UTF_8));
+                sequenceFlow.setConditionExpression(
+                        "${bpmBranchConditionEvaluator.matches(execution, '" + encoded
+                                + "', '" + branchEncoded + "', '"
+                                + priority
+                                + "')}");
+            }
+        }
         return sequenceFlow;
+    }
+
+    private int edgeEvaluationOrder(GraphElement edge) {
+        if (edge == null || edge.getConfig() == null) return 0;
+        Map<String, Object> config = edge.getConfig();
+        if (Boolean.TRUE.equals(config.get("default"))
+                || Boolean.TRUE.equals(config.get("isDefault"))) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(config.getOrDefault("priority", 0)));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private String extractCondition(Map<String, Object> config) {
+        Object condition = config.get("condition");
+        if (condition instanceof Map<?, ?> map && map.get("expression") != null) {
+            return String.valueOf(map.get("expression"));
+        }
+        if (config.get("expression") != null) return String.valueOf(config.get("expression"));
+        return null;
     }
 }

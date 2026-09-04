@@ -17,7 +17,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -106,7 +108,7 @@ public class ProcessStartService {
         log.debug("审批人解析完成: resolver={}, approver={}",
                 approverResolver.getClass().getSimpleName(), approver);
 
-        // 3. 经 Facade 发起（只放 id 引用变量，submittedData 不塞入流程变量）
+        // 3. 经 Facade 发起；formData 是本次提交的只读快照，供受控表达式和意见初始化使用。
         if (cmd.getTenantId() == null) {
             throw new IllegalArgumentException(
                     "tenantId must not be null when starting process; formKey=" + cmd.getFormKey());
@@ -117,6 +119,11 @@ public class ProcessStartService {
         variables.put("recordId", cmd.getRecordId());
         variables.put("submitter", String.valueOf(cmd.getSubmitter()));
         variables.put("tenantId", cmd.getTenantId());
+        Map<String, Object> formData = new LinkedHashMap<>();
+        if (cmd.getSubmittedData() != null) {
+            formData.putAll(cmd.getSubmittedData());
+        }
+        variables.put("formData", Collections.unmodifiableMap(formData));
 
         // 设备控制透传：表单数据若携带 device_key/deviceKey、command_key/commandKey，
         // 透传为流程变量，供审批通过后下发设备命令（无则跳过，不影响普通审批流）
@@ -142,9 +149,9 @@ public class ProcessStartService {
         instance.setBusinessKey(cmd.getRecordId());
         instance.setFormKey(cmd.getFormKey());
         instance.setInitiatorId(cmd.getSubmitter());
-        // Flowable 可能在 startProcess 返回前就完成无人工节点的流程（例如
-        // START → P57_VERIFY → END）。此时若无条件写 RUNNING，会产生“引擎已到
-        // End、业务记录仍运行中”的假终态；沿用审批完成路径的 APPROVED 语义。
+        // Flowable 可能在 startProcess 返回前就完成无人工节点的流程。此时若无条件写
+        // RUNNING，会产生“引擎已到 End、业务记录仍运行中”的假终态；沿用审批完成路径
+        // 的 APPROVED 语义。
         boolean processActive = bpmTaskFacade.isProcessActive(processInstanceId);
         instance.setStatus(processActive
                 ? InstanceStatusEnum.RUNNING.getCode()
@@ -200,24 +207,25 @@ public class ProcessStartService {
             return;
         }
 
-        Long approverId;
-        try {
-            approverId = Long.valueOf(matchedTask.getAssignee());
-        } catch (NumberFormatException e) {
-            log.warn("task assignee 非数字格式: assignee={}，跳过 TODO_CREATED 通知",
-                    matchedTask.getAssignee());
-            return;
+        java.util.LinkedHashSet<String> recipientIds = new java.util.LinkedHashSet<>();
+        if (matchedTask.getAssignee() != null) recipientIds.add(matchedTask.getAssignee());
+        if (matchedTask.getCandidateUserIds() != null) recipientIds.addAll(matchedTask.getCandidateUserIds());
+        for (String recipient : recipientIds) {
+            Long approverId;
+            try {
+                approverId = Long.valueOf(recipient);
+            } catch (NumberFormatException e) {
+                log.warn("task participant 非数字格式: participant={}，跳过该 TODO_CREATED 通知", recipient);
+                continue;
+            }
+            domainEventPublisher.publish(new BpmNotifyEvent(
+                    BpmNotifyTrigger.TODO_CREATED,
+                    approverId,
+                    cmd.getTenantId(),
+                    cmd.getSubmitter(),
+                    matchedTask.getTaskId()));
         }
-
-        BpmNotifyEvent event = new BpmNotifyEvent(
-                BpmNotifyTrigger.TODO_CREATED,
-                approverId,
-                cmd.getTenantId(),
-                cmd.getSubmitter(),
-                matchedTask.getTaskId()
-        );
-        domainEventPublisher.publish(event);
-        log.debug("TODO_CREATED 事件已发布: taskId={}, approverId={}",
-                matchedTask.getTaskId(), approverId);
+        log.debug("TODO_CREATED 事件已发布: taskId={}, recipients={}",
+                matchedTask.getTaskId(), recipientIds);
     }
 }

@@ -6,6 +6,9 @@ import com.sw.ck.bpm.api.event.BpmNotifyEvent;
 import com.sw.ck.bpm.api.event.BpmNotifyTrigger;
 import com.sw.ck.bpm.api.facade.BpmTaskFacade;
 import com.sw.ck.bpm.process.dto.ApprovalHistoryItemDTO;
+import com.sw.ck.bpm.process.dto.ApprovalAction;
+import com.sw.ck.bpm.process.dto.ApprovalActionRequest;
+import com.sw.ck.bpm.process.entity.ApprovalActionRecord;
 import com.sw.ck.bpm.process.dto.ProcessedTaskRespDTO;
 import com.sw.ck.bpm.process.dto.TaskDetailRespDTO;
 import com.sw.ck.bpm.process.dto.TodoTaskRespDTO;
@@ -14,6 +17,11 @@ import com.sw.ck.bpm.process.entity.BpmProcessDef;
 import com.sw.ck.bpm.process.entity.InstanceStatusEnum;
 import com.sw.ck.bpm.process.service.BpmInstanceService;
 import com.sw.ck.bpm.process.service.BpmProcessDefService;
+import com.sw.ck.bpm.process.service.ApprovalActionService;
+import com.sw.ck.bpm.process.validator.ApprovalOpinionValidator;
+import com.sw.ck.bpm.api.dto.GraphElement;
+import com.sw.ck.bpm.api.dto.ProcessGraph;
+import com.sw.ck.bpm.api.participant.ParticipantSnapshotRecorder;
 import com.sw.ck.common.event.DomainEventPublisher;
 import com.sw.ck.common.exception.BaseException;
 import com.sw.ck.common.exception.CommonErrorCode;
@@ -26,6 +34,8 @@ import com.sw.ck.security.holder.LoginUserHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -77,17 +87,47 @@ public class BpmTodoController {
     private final BpmProcessDefService bpmProcessDefService;
     private final DomainEventPublisher domainEventPublisher;
     private final UserQueryFacade userQueryFacade;
+    private final ApprovalActionService approvalActionService;
+    private final ParticipantSnapshotRecorder participantSnapshotRecorder;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public BpmTodoController(BpmTaskFacade bpmTaskFacade,
                              BpmInstanceService bpmInstanceService,
                              BpmProcessDefService bpmProcessDefService,
                              DomainEventPublisher domainEventPublisher,
                              UserQueryFacade userQueryFacade) {
+        this(bpmTaskFacade, bpmInstanceService, bpmProcessDefService, domainEventPublisher,
+                userQueryFacade, null, null);
+    }
+
+    public BpmTodoController(BpmTaskFacade bpmTaskFacade,
+                             BpmInstanceService bpmInstanceService,
+                             BpmProcessDefService bpmProcessDefService,
+                             DomainEventPublisher domainEventPublisher,
+                             UserQueryFacade userQueryFacade,
+                             ApprovalActionService approvalActionService,
+                             com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+        this(bpmTaskFacade, bpmInstanceService, bpmProcessDefService, domainEventPublisher,
+                userQueryFacade, approvalActionService, objectMapper, null);
+    }
+
+    @Autowired
+    public BpmTodoController(BpmTaskFacade bpmTaskFacade,
+                             BpmInstanceService bpmInstanceService,
+                             BpmProcessDefService bpmProcessDefService,
+                             DomainEventPublisher domainEventPublisher,
+                             UserQueryFacade userQueryFacade,
+                             ApprovalActionService approvalActionService,
+                             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                             ParticipantSnapshotRecorder participantSnapshotRecorder) {
         this.bpmTaskFacade = bpmTaskFacade;
         this.bpmInstanceService = bpmInstanceService;
         this.bpmProcessDefService = bpmProcessDefService;
         this.domainEventPublisher = domainEventPublisher;
         this.userQueryFacade = userQueryFacade;
+        this.approvalActionService = approvalActionService;
+        this.objectMapper = objectMapper;
+        this.participantSnapshotRecorder = participantSnapshotRecorder;
     }
 
     /**
@@ -138,19 +178,37 @@ public class BpmTodoController {
      * @return 操作成功
      * @throws BaseException 任务不存在 / 越权时抛出
      */
+    /** 兼容既有 Java 调用方；HTTP 映射使用带 body 的重载。 */
+    public R<Void> complete(String taskId) {
+        return handleAction(taskId, null);
+    }
+
     @Transactional
     @PostMapping("/{taskId}/complete")
-    public R<Void> complete(@PathVariable String taskId) {
+    public R<Void> complete(@PathVariable String taskId,
+                            @RequestBody(required = false) ApprovalActionRequest request) {
+        if (request == null) {
+            return handleAction(taskId, null);
+        }
+        request.setAction(ApprovalAction.APPROVE);
+        return handleAction(taskId, request);
+    }
+
+    private R<Void> handleAction(String taskId, ApprovalActionRequest request) {
         LoginUser loginUser = LoginUserHolder.get();
 
         // 1. 查询 task（经 Facade 包装，无 Flowable 泄漏）
         BpmTaskDTO task = bpmTaskFacade.getTask(taskId);
         if (task == null) {
+            if (approvalActionService != null && approvalActionService.findByTaskId(taskId) != null) {
+                throw new BaseException(com.sw.ck.bpm.api.exception.BpmErrorCode.APPROVAL_ALREADY_HANDLED);
+            }
             throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "任务不存在");
         }
 
         // 2. 越权校验：审批人
-        if (!String.valueOf(loginUser.getUserId()).equals(task.getAssignee())) {
+        boolean assigned = String.valueOf(loginUser.getUserId()).equals(task.getAssignee());
+        if (!assigned && !bpmTaskFacade.canHandle(taskId, String.valueOf(loginUser.getUserId()))) {
             log.warn("越权拒绝（审批人不匹配）: taskId={}, taskAssignee={}, currentUserId={}",
                     taskId, task.getAssignee(), loginUser.getUserId());
             throw new BaseException(CommonErrorCode.FORBIDDEN.getCode(), "无权处理该任务");
@@ -158,26 +216,91 @@ public class BpmTodoController {
 
         String processInstanceId = task.getProcessInstanceId();
 
+        BpmInstance instance = bpmInstanceService.findByProcessInstanceId(processInstanceId).orElse(null);
+        if (instance != null && InstanceStatusEnum.FAILED.getCode().equals(instance.getStatus())) {
+            log.warn("失败实例拒绝继续审批: processInstanceId={}, taskId={}, userId={}",
+                    processInstanceId, taskId, loginUser.getUserId());
+            throw new BaseException(com.sw.ck.bpm.api.exception.BpmErrorCode.INSTANCE_FAILED);
+        }
+
         // 2.5 流程结束前读取设备透传变量（实例结束后 Runtime 变量不可查）
         String productId = asString(bpmTaskFacade.getVariable(processInstanceId, "productId"));
         String deviceName = asString(bpmTaskFacade.getVariable(processInstanceId, "deviceName"));
         String commandKey = asString(bpmTaskFacade.getVariable(processInstanceId, "commandKey"));
         String commandType = asString(bpmTaskFacade.getVariable(processInstanceId, "commandType"));
 
-        // 3. 完成审批（经 Facade）
-        bpmTaskFacade.complete(taskId, null);
+        boolean legacyInvocation = request == null;
+        ApprovalActionRequest effectiveRequest = legacyInvocation ? new ApprovalActionRequest() : request;
+        ApprovalAction action = effectiveRequest.getAction() == null ? ApprovalAction.APPROVE
+                : effectiveRequest.getAction();
+        effectiveRequest.setAction(action);
+        Map<String, Object> processVariables = bpmTaskFacade.getVariables(processInstanceId);
+        ApprovalOpinionValidator.validate(effectiveRequest, resolveOpinionForm(task), processVariables);
+        if (action == ApprovalAction.RETURN) {
+            if (effectiveRequest.getReturnTargetNodeId() == null
+                    || effectiveRequest.getReturnTargetNodeId().isBlank()) {
+                throw new BaseException(com.sw.ck.bpm.api.exception.BpmErrorCode.APPROVAL_RETURN_TARGET_INVALID);
+            }
+            bpmTaskFacade.returnTask(taskId, effectiveRequest.getReturnTargetNodeId());
+            if (participantSnapshotRecorder != null) {
+                participantSnapshotRecorder.settle(processInstanceId, task.getTaskDefinitionKey(),
+                        task.getTaskId(), String.valueOf(loginUser.getUserId()), action.name(),
+                        loginUser.getTenantId());
+            }
+            recordAction(task, loginUser, effectiveRequest, action, "RETURNED", processVariables);
+            publishProcessEvent(processInstanceId, loginUser, BpmNotifyTrigger.PROCESS_RETURNED);
+            return R.ok();
+        }
+
+        Map<String, Object> variables = legacyInvocation ? null : new java.util.HashMap<>();
+        if (variables != null) {
+            variables.put("outcome", action == ApprovalAction.REJECT ? "REJECTED" : "APPROVED");
+        }
+        try {
+            if (assigned) bpmTaskFacade.complete(taskId, variables);
+            else bpmTaskFacade.completeAsUser(taskId, String.valueOf(loginUser.getUserId()),
+                    variables == null ? Map.of() : variables);
+        } catch (RuntimeException e) {
+            BaseException branchFailure = findBaseException(e,
+                    com.sw.ck.bpm.api.exception.BpmErrorCode.BRANCH_EVALUATION_FAILED.getCode());
+            if (branchFailure != null) {
+                bpmInstanceService.updateStatus(processInstanceId, InstanceStatusEnum.FAILED.getCode());
+                log.warn("分支条件求值失败，实例进入 FAILED: processInstanceId={}, taskId={}",
+                        processInstanceId, taskId);
+                return R.fail(branchFailure.getCode(), branchFailure.getMessage());
+            }
+            throw e;
+        }
+        // 普通审批的 REJECT 是流程终态；会签子任务的 REJECT 只是该参与人的
+        // 独立意见，必须交给 CONSENSUS completionCondition 按 ANY/ALL/RATIO
+        // 结算，不能被这里的通用终止分支提前截断。
+        if (action == ApprovalAction.REJECT && !isConsensusTask(task)) {
+            // 驳回是流程终态动作；没有显式驳回分支时不能让线性流程继续创建后续待办。
+            bpmTaskFacade.terminateProcess(processInstanceId, "REJECTED");
+        }
+        if (participantSnapshotRecorder != null) {
+            participantSnapshotRecorder.settle(processInstanceId, task.getTaskDefinitionKey(),
+                    task.getTaskId(), String.valueOf(loginUser.getUserId()), action.name(),
+                    loginUser.getTenantId());
+        }
+        recordAction(task, loginUser, effectiveRequest, action,
+                action == ApprovalAction.REJECT ? "REJECTED" : "APPROVED", processVariables);
         log.info("审批已完成: taskId={}, processInstanceId={}, userId={}",
                 taskId, processInstanceId, loginUser.getUserId());
 
         // 4. 检测流程是否结束（经 Facade，不直接查 RuntimeService）
         if (!bpmTaskFacade.isProcessActive(processInstanceId)) {
-            bpmInstanceService.updateStatus(
-                    processInstanceId, InstanceStatusEnum.APPROVED.getCode());
-            log.info("流程已结束，实例状态更新为 APPROVED: processInstanceId={}",
-                    processInstanceId);
+            String terminalStatus = action == ApprovalAction.REJECT
+                    ? InstanceStatusEnum.REJECTED.getCode()
+                    : InstanceStatusEnum.APPROVED.getCode();
+            bpmInstanceService.updateStatus(processInstanceId, terminalStatus);
+            log.info("流程已结束，实例状态更新为 {}: processInstanceId={}",
+                    terminalStatus, processInstanceId);
 
-            // — 发布 PROCESS_APPROVED 通知事件 —
-            publishApprovedEvent(processInstanceId, loginUser);
+            // — 发布审批结果通知事件 —
+            publishProcessEvent(processInstanceId, loginUser,
+                    action == ApprovalAction.REJECT ? BpmNotifyTrigger.PROCESS_REJECTED
+                            : BpmNotifyTrigger.PROCESS_APPROVED);
 
             // — 审批结果驱动设备：流程变量携带 productId/deviceName/commandKey 时发布设备命令事件 —
             if (productId != null && deviceName != null && commandKey != null) {
@@ -207,6 +330,17 @@ public class BpmTodoController {
         return s.isEmpty() ? null : s;
     }
 
+    private BaseException findBaseException(Throwable error, int code) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof BaseException baseException && baseException.getCode() == code) {
+                return baseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
     /**
      * 流程结束时发布 PROCESS_APPROVED 通知事件。
      * <p>
@@ -215,25 +349,111 @@ public class BpmTodoController {
      * </p>
      */
     private void publishApprovedEvent(String processInstanceId, LoginUser loginUser) {
+        publishProcessEvent(processInstanceId, loginUser, BpmNotifyTrigger.PROCESS_APPROVED);
+    }
+
+    private void publishProcessEvent(String processInstanceId, LoginUser loginUser,
+                                     BpmNotifyTrigger trigger) {
         BpmInstance instance = bpmInstanceService
                 .findByProcessInstanceId(processInstanceId)
                 .orElse(null);
         if (instance == null) {
-            log.warn("流程实例记录不存在: processInstanceId={}，跳过 PROCESS_APPROVED 通知",
-                    processInstanceId);
+            log.warn("流程实例记录不存在: processInstanceId={}，跳过 {} 通知",
+                    processInstanceId, trigger);
             return;
         }
 
         BpmNotifyEvent event = new BpmNotifyEvent(
-                BpmNotifyTrigger.PROCESS_APPROVED,
+                trigger,
                 instance.getInitiatorId(),
                 loginUser.getTenantId(),
                 loginUser.getUserId(),
                 processInstanceId
         );
         domainEventPublisher.publish(event);
-        log.debug("PROCESS_APPROVED 事件已发布: processInstanceId={}, initiatorId={}",
-                processInstanceId, instance.getInitiatorId());
+        log.debug("流程结果事件已发布: trigger={}, processInstanceId={}, initiatorId={}",
+                trigger, processInstanceId, instance.getInitiatorId());
+    }
+
+    private void recordAction(BpmTaskDTO task, LoginUser loginUser,
+                              ApprovalActionRequest request, ApprovalAction action,
+                              String settlementStatus, Map<String, Object> processVariables) {
+        if (approvalActionService == null) return;
+        ApprovalActionRecord record = new ApprovalActionRecord();
+        record.setProcessInstanceId(task.getProcessInstanceId());
+        record.setNodeKey(task.getTaskDefinitionKey() == null
+                ? task.getTaskId() : task.getTaskDefinitionKey());
+        record.setTaskId(task.getTaskId());
+        record.setActorId(loginUser.getUserId());
+        record.setAction(action.name());
+        record.setOpinionFormId(request.getOpinionFormId());
+        record.setOpinionFormVersion(request.getOpinionFormVersion());
+        Map<String, Object> opinionData = request.getOpinionData() == null
+                ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(request.getOpinionData());
+        if (request.getComment() != null && !request.getComment().isBlank()) {
+            opinionData.putIfAbsent("comment", request.getComment());
+        }
+        try {
+            record.setOpinionData(objectMapper == null ? "{}" : objectMapper.writeValueAsString(opinionData));
+            Map<String, Object> initialization = new java.util.LinkedHashMap<>();
+            initialization.put("source", "processVariables.formData");
+            Object formData = processVariables == null ? null : processVariables.get("formData");
+            if (formData instanceof Map<?, ?> values) {
+                initialization.put("sourceFields", values.keySet().stream().map(String::valueOf).toList());
+            }
+            record.setInitializationSummary(objectMapper == null ? "{}"
+                    : objectMapper.writeValueAsString(initialization));
+        } catch (Exception e) {
+            throw new BaseException(com.sw.ck.bpm.api.exception.BpmErrorCode.APPROVAL_OPINION_INVALID);
+        }
+        record.setSettlementStatus(settlementStatus);
+        record.setTenantId(loginUser.getTenantId());
+        approvalActionService.save(record);
+    }
+
+    private Map<String, Object> resolveOpinionForm(BpmTaskDTO task) {
+        if (bpmProcessDefService == null || objectMapper == null
+                || task.getProcessDefinitionKey() == null || task.getTaskDefinitionKey() == null) {
+            return Map.of();
+        }
+        try {
+            BpmProcessDef definition = bpmProcessDefService
+                    .findByProcessKey(task.getProcessDefinitionKey());
+            if (definition == null || definition.getGraphJson() == null) return Map.of();
+            ProcessGraph graph = objectMapper.readValue(definition.getGraphJson(), ProcessGraph.class);
+            if (graph.getElements() == null) return Map.of();
+            return graph.getElements().stream()
+                    .filter(element -> "node".equals(element.getKind())
+                            && task.getTaskDefinitionKey().equals(element.getId()))
+                    .map(GraphElement::getConfig)
+                    .filter(java.util.Objects::nonNull)
+                    .map(config -> config.get("opinionForm"))
+                    .filter(Map.class::isInstance)
+                    .map(value -> (Map<String, Object>) value)
+                    .findFirst().orElse(Map.of());
+        } catch (Exception e) {
+            throw new BaseException(com.sw.ck.bpm.api.exception.BpmErrorCode.APPROVAL_OPINION_INVALID);
+        }
+    }
+
+    private boolean isConsensusTask(BpmTaskDTO task) {
+        if (task == null || bpmProcessDefService == null || objectMapper == null
+                || task.getProcessDefinitionKey() == null || task.getTaskDefinitionKey() == null) {
+            return false;
+        }
+        try {
+            BpmProcessDef definition = bpmProcessDefService
+                    .findByProcessKey(task.getProcessDefinitionKey());
+            if (definition == null || definition.getGraphJson() == null) return false;
+            ProcessGraph graph = objectMapper.readValue(definition.getGraphJson(), ProcessGraph.class);
+            if (graph.getElements() == null) return false;
+            return graph.getElements().stream()
+                    .filter(element -> "node".equals(element.getKind())
+                            && task.getTaskDefinitionKey().equals(element.getId()))
+                    .anyMatch(element -> "CONSENSUS".equalsIgnoreCase(element.getType()));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**
@@ -258,38 +478,27 @@ public class BpmTodoController {
      * @return 操作成功
      * @throws BaseException 任务不存在 / 越权时抛出
      */
+    /** 兼容既有 Java 调用方；HTTP 映射使用带 body 的重载。 */
+    public R<Void> reject(String taskId) {
+        return reject(taskId, null);
+    }
+
     @Transactional
     @PostMapping("/{taskId}/reject")
-    public R<Void> reject(@PathVariable String taskId) {
-        LoginUser loginUser = LoginUserHolder.get();
+    public R<Void> reject(@PathVariable String taskId,
+                          @RequestBody(required = false) ApprovalActionRequest request) {
+        ApprovalActionRequest actionRequest = request == null ? new ApprovalActionRequest() : request;
+        actionRequest.setAction(ApprovalAction.REJECT);
+        return handleAction(taskId, actionRequest);
+    }
 
-        BpmTaskDTO task = bpmTaskFacade.getTask(taskId);
-        if (task == null) {
-            throw new BaseException(CommonErrorCode.NOT_FOUND.getCode(), "任务不存在");
-        }
-
-        if (!String.valueOf(loginUser.getUserId()).equals(task.getAssignee())) {
-            log.warn("越权拒绝（审批人不匹配）: taskId={}, taskAssignee={}, currentUserId={}",
-                    taskId, task.getAssignee(), loginUser.getUserId());
-            throw new BaseException(CommonErrorCode.FORBIDDEN.getCode(), "无权处理该任务");
-        }
-
-        String processInstanceId = task.getProcessInstanceId();
-
-        Map<String, Object> variables = new java.util.HashMap<>();
-        variables.put("outcome", "REJECTED");
-        bpmTaskFacade.complete(taskId, variables);
-        log.info("审批已驳回: taskId={}, processInstanceId={}, userId={}",
-                taskId, processInstanceId, loginUser.getUserId());
-
-        if (!bpmTaskFacade.isProcessActive(processInstanceId)) {
-            bpmInstanceService.updateStatus(
-                    processInstanceId, InstanceStatusEnum.REJECTED.getCode());
-            log.info("流程已结束（驳回），实例状态更新为 REJECTED: processInstanceId={}",
-                    processInstanceId);
-        }
-
-        return R.ok();
+    @Transactional
+    @PostMapping("/{taskId}/return")
+    public R<Void> returnTask(@PathVariable String taskId,
+                              @RequestBody ApprovalActionRequest request) {
+        ApprovalActionRequest actionRequest = request == null ? new ApprovalActionRequest() : request;
+        actionRequest.setAction(ApprovalAction.RETURN);
+        return handleAction(taskId, actionRequest);
     }
 
     // ==================== 内部方法 ====================
@@ -352,6 +561,7 @@ public class BpmTodoController {
         // 流程变量
         Map<String, Object> variables = bpmTaskFacade.getVariables(task.getProcessInstanceId());
         dto.setProcessVariables(variables);
+        dto.setOpinionForm(resolveOpinionForm(task));
 
         if (task.getAssignee() != null && task.getAssignee().matches("\\d+")) {
             dto.setAssigneeName(resolveUserNames(java.util.Set.of(Long.valueOf(task.getAssignee())))
@@ -367,6 +577,7 @@ public class BpmTodoController {
             ApprovalHistoryItemDTO item = new ApprovalHistoryItemDTO();
             item.setTaskId(h.getTaskId());
             item.setTaskName(h.getName());
+            item.setNodeKey(h.getTaskDefinitionKey());
             item.setAssignee(h.getAssignee());
             if (h.getCreateTime() != null) {
                 item.setCreateTime(LocalDateTime.ofInstant(
@@ -377,6 +588,28 @@ public class BpmTodoController {
                         h.getEndTime().toInstant(), ZoneId.systemDefault()));
             }
             history.add(item);
+        }
+        if (approvalActionService != null) {
+            Map<String, ApprovalActionRecord> actions = approvalActionService
+                    .findByProcessInstanceId(task.getProcessInstanceId()).stream()
+                    .collect(Collectors.toMap(ApprovalActionRecord::getTaskId,
+                            java.util.function.Function.identity(), (left, right) -> left));
+            for (ApprovalHistoryItemDTO item : history) {
+                ApprovalActionRecord action = actions.get(item.getTaskId());
+                if (action == null) continue;
+                item.setAction(action.getAction());
+                item.setApprovalResult("APPROVE".equals(action.getAction()) ? "APPROVED"
+                        : "REJECT".equals(action.getAction()) ? "REJECTED" : null);
+                item.setOpinionFormId(action.getOpinionFormId());
+                item.setOpinionFormVersion(action.getOpinionFormVersion());
+                if (action.getOpinionData() != null && objectMapper != null) {
+                    try {
+                        item.setOpinionData(objectMapper.readValue(action.getOpinionData(), Map.class));
+                    } catch (Exception ignored) {
+                        item.setOpinionData(Map.of());
+                    }
+                }
+            }
         }
         // 审批人展示名富化（可读身份回显；查询失败不阻断详情）
         Map<Long, String> historyNames = resolveUserNames(historyTasks.stream()

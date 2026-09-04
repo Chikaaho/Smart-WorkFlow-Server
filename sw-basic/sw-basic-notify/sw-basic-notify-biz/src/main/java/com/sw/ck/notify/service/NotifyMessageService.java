@@ -26,6 +26,9 @@ public interface NotifyMessageService extends BaseService<NotifyMessage> {
      */
     List<NotifyMessage> findByRecipient(Long recipientId);
 
+    /** 按租户上下文查找已发送的幂等消息。 */
+    NotifyMessage findByIdempotencyKey(String idempotencyKey);
+
     /**
      * 按接收人查询通知列表，支持已读状态和关键词过滤。
      * <p>

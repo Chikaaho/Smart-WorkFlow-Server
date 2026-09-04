@@ -20,4 +20,7 @@ public interface NotifyFacade {
      * @param cmd 通知命令，不可为空
      */
     void send(SendNotifyCommand cmd);
+
+    /** 统一渠道入口；IN_APP 必须先完成站内信持久化才能返回成功。 */
+    NotifySendResult send(NotifySendRequest request);
 }

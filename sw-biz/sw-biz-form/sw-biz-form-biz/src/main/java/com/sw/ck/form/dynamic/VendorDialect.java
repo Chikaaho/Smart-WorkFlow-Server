@@ -75,9 +75,10 @@ public enum VendorDialect {
 
         @Override
         public String wrapIdentifier(String name) {
-            // PostgreSQL 对未引用标识符自动折叠到小写；
-            // 显式引用确保不会与关键字冲突
-            return "\"" + name.toLowerCase() + "\"";
+            // 动态字段允许安全的 camelCase 名称。显式引用必须保留原始大小写，
+            // 否则 CREATE TABLE 会生成 applicantnote，而提交/查询路径按逻辑字段
+            // 引用 "applicantNote"，两条路径在 PostgreSQL 上会分裂为不同列。
+            return "\"" + name + "\"";
         }
     };
 
